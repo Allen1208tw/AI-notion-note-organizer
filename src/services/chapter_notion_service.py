@@ -7,6 +7,11 @@ from notion_client import Client
 
 from src.config.settings import NOTION_API_KEY, NOTION_PARENT_PAGE_ID
 from src.models.chapter_models import ChapterLearningNote
+from src.services.chapter_cache_service import (
+    load_chapter_cache,
+    save_chapter_note_cache,
+    save_visual_context_cache,
+)
 from src.services.chapter_service import analyze_chapter
 from src.services.export_state_service import (
     get_pending_chapters,
@@ -41,7 +46,7 @@ def _split_text(
     將長文字切成安全片段。
 
     Notion 單一 text.content 上限為 2000 字元，
-    這裡保守使用 1800。
+    此處保守使用 1800 字元。
     """
 
     cleaned_text = str(text or "").strip()
@@ -171,10 +176,7 @@ def bullet_blocks(text: str) -> list[dict]:
     blocks = []
 
     for index, part in enumerate(parts):
-        prefix = ""
-
-        if index > 0:
-            prefix = "（續）"
+        prefix = "（續）" if index > 0 else ""
 
         blocks.append(
             {
@@ -619,7 +621,12 @@ def _build_subsection_blocks(
 def _build_image_insight_blocks(
     chapter_note: ChapterLearningNote,
 ) -> list[dict]:
-    """建立 PDF 圖片解讀文字區塊。"""
+    """
+    建立 PDF 圖片解讀文字區塊。
+
+    Base64 圖片目前不會上傳到 Notion，
+    只會保留圖片分析文字。
+    """
 
     if not chapter_note.image_insights:
         return []
@@ -982,6 +989,114 @@ def _append_export_summary(
     )
 
 
+def _get_or_generate_visual_context(
+    document_name: str,
+    chapter: dict,
+    parsed_document: dict,
+    progress_callback: Callable[[int, int, str], None] | None,
+    current: int,
+    total: int,
+    max_visual_pages: int,
+) -> tuple[list[dict], bool]:
+    """
+    優先讀取 PDF 視覺分析快取。
+
+    回傳：
+    - visual_context
+    - 是否使用快取
+    """
+
+    chapter_cache = load_chapter_cache(
+        document_name=document_name,
+        chapter=chapter,
+    )
+
+    if chapter_cache["visual_cached"]:
+        return chapter_cache["visual_context"], True
+
+    metadata = parsed_document.get("metadata", {})
+
+    is_pdf = metadata.get("file_extension") == ".pdf"
+    pdf_bytes = parsed_document.get("pdf_bytes")
+    page_texts = parsed_document.get("page_texts")
+
+    if not is_pdf or not pdf_bytes or not page_texts:
+        save_visual_context_cache(
+            document_name=document_name,
+            chapter=chapter,
+            visual_context=[],
+        )
+
+        return [], False
+
+    if progress_callback:
+        progress_callback(
+            current,
+            total,
+            f"正在辨識 PDF 圖片：{chapter.get('title', '未命名章節')}",
+        )
+
+    visual_context = analyze_chapter_visuals(
+        chapter=chapter,
+        pdf_bytes=pdf_bytes,
+        page_texts=page_texts,
+        max_pages=max_visual_pages,
+    )
+
+    save_visual_context_cache(
+        document_name=document_name,
+        chapter=chapter,
+        visual_context=visual_context,
+    )
+
+    return visual_context, False
+
+
+def _get_or_generate_chapter_note(
+    document_name: str,
+    chapter: dict,
+    visual_context: list[dict],
+    progress_callback: Callable[[int, int, str], None] | None,
+    current: int,
+    total: int,
+) -> tuple[ChapterLearningNote, bool]:
+    """
+    優先讀取 AI 詳細學習筆記快取。
+
+    回傳：
+    - ChapterLearningNote
+    - 是否使用快取
+    """
+
+    chapter_cache = load_chapter_cache(
+        document_name=document_name,
+        chapter=chapter,
+    )
+
+    if chapter_cache["note_cached"]:
+        return chapter_cache["chapter_note"], True
+
+    if progress_callback:
+        progress_callback(
+            current,
+            total,
+            f"正在生成詳細筆記：{chapter.get('title', '未命名章節')}",
+        )
+
+    chapter_note = analyze_chapter(
+        chapter=chapter,
+        visual_context=visual_context,
+    )
+
+    save_chapter_note_cache(
+        document_name=document_name,
+        chapter=chapter,
+        chapter_note=chapter_note,
+    )
+
+    return chapter_note, False
+
+
 def create_document_learning_notebook(
     document_name: str,
     chapters: list[dict],
@@ -994,12 +1109,14 @@ def create_document_learning_notebook(
     一鍵建立或繼續整份文件的 Notion 詳細學習筆記。
 
     resume=True：
-    - 讀取既有進度檔。
-    - 自動跳過已成功的 Module。
-    - 只執行失敗或尚未完成的 Module。
+    - 讀取既有 Notion 匯出進度。
+    - 跳過已成功建立的 Module。
+    - 讀取既有 AI 詳細筆記快取。
+    - 未完成的 Module 優先直接匯出快取結果。
 
     resume=False：
-    - 建立全新的匯出工作與新的 Notion 父頁。
+    - 建立新的 Notion 父頁。
+    - 仍可沿用 AI 詳細筆記快取，避免重複花 API 額度。
     """
 
     if not chapters:
@@ -1072,14 +1189,13 @@ def create_document_learning_notebook(
             ),
             "skipped_chapter_count": completed_before,
             "processed_chapter_count": 0,
+            "cached_visual_count": 0,
+            "cached_note_count": 0,
             "is_finished": state.get("is_finished", False),
         }
 
-    metadata = parsed_document.get("metadata", {})
-
-    is_pdf = metadata.get("file_extension") == ".pdf"
-    pdf_bytes = parsed_document.get("pdf_bytes")
-    page_texts = parsed_document.get("page_texts")
+    cached_visual_count = 0
+    cached_note_count = 0
 
     for pending_index, chapter in enumerate(
         pending_chapters,
@@ -1099,37 +1215,51 @@ def create_document_learning_notebook(
                 progress_callback(
                     overall_current - 1,
                     overall_total,
-                    f"正在分析：{chapter_title}",
+                    f"正在準備：{chapter_title}",
                 )
 
-            visual_context = []
+            visual_context, visual_from_cache = (
+                _get_or_generate_visual_context(
+                    document_name=document_name,
+                    chapter=chapter,
+                    parsed_document=parsed_document,
+                    progress_callback=progress_callback,
+                    current=overall_current - 1,
+                    total=overall_total,
+                    max_visual_pages=max_visual_pages,
+                )
+            )
 
-            if is_pdf and pdf_bytes and page_texts:
+            if visual_from_cache:
+                cached_visual_count += 1
+
                 if progress_callback:
                     progress_callback(
                         overall_current - 1,
                         overall_total,
-                        f"正在辨識 PDF 圖片：{chapter_title}",
+                        f"已讀取圖片分析快取：{chapter_title}",
                     )
 
-                visual_context = analyze_chapter_visuals(
+            chapter_note, note_from_cache = (
+                _get_or_generate_chapter_note(
+                    document_name=document_name,
                     chapter=chapter,
-                    pdf_bytes=pdf_bytes,
-                    page_texts=page_texts,
-                    max_pages=max_visual_pages,
+                    visual_context=visual_context,
+                    progress_callback=progress_callback,
+                    current=overall_current - 1,
+                    total=overall_total,
                 )
-
-            if progress_callback:
-                progress_callback(
-                    overall_current - 1,
-                    overall_total,
-                    f"正在生成詳細筆記：{chapter_title}",
-                )
-
-            chapter_note = analyze_chapter(
-                chapter=chapter,
-                visual_context=visual_context,
             )
+
+            if note_from_cache:
+                cached_note_count += 1
+
+                if progress_callback:
+                    progress_callback(
+                        overall_current - 1,
+                        overall_total,
+                        f"已讀取詳細筆記快取：{chapter_title}",
+                    )
 
             if progress_callback:
                 progress_callback(
@@ -1198,5 +1328,7 @@ def create_document_learning_notebook(
         "failed_chapters": failed_chapters,
         "skipped_chapter_count": completed_before,
         "processed_chapter_count": total_pending,
+        "cached_visual_count": cached_visual_count,
+        "cached_note_count": cached_note_count,
         "is_finished": is_finished,
     }

@@ -17,6 +17,9 @@ from src.services.chapter_notion_service import (
     create_document_learning_notebook,
 )
 from src.services.chapter_service import analyze_chapter
+from src.services.export_estimate_service import (
+    estimate_document_export,
+)
 from src.services.file_validator import validate_file
 from src.services.notion_service import create_notion_page
 from src.services.openai_service import test_openai_connection
@@ -502,6 +505,191 @@ def show_final_result(document_name: str) -> None:
         )
 
 
+def _show_single_export_estimate(
+    title: str,
+    estimate: dict,
+    is_resume_mode: bool,
+) -> None:
+    """顯示單一匯出模式的預估資訊。"""
+
+    st.markdown(f"#### {title}")
+
+    if estimate["chapter_count"] == 0:
+        st.info("目前沒有可匯出的主章節。")
+        return
+
+    if not is_resume_mode:
+        st.markdown("##### 開始整份 Notion 匯出預估")
+
+        row1_col1, row1_col2, row1_col3 = st.columns(3)
+
+        row1_col1.metric(
+            "主章節總數",
+            estimate["chapter_count"],
+        )
+
+        row1_col2.metric(
+            "預估 AI 呼叫次數",
+            estimate["estimated_api_calls"],
+        )
+
+        row1_col3.metric(
+            "預估總 Token",
+            estimate["estimated_total_tokens_text"],
+        )
+
+        row2_col1, row2_col2, row2_col3 = st.columns(3)
+
+        row2_col1.metric(
+            "本次預計分析圖片",
+            f"{estimate['need_visual_analysis_page_count']} 張",
+        )
+
+        row2_col2.metric(
+            "本次預計生成詳細筆記",
+            f"{estimate['need_note_generation_count']} 份",
+        )
+
+        row2_col3.metric(
+            "預估輸入 Token",
+            estimate["estimated_input_tokens_text"],
+        )
+
+        row3_col1, row3_col2 = st.columns(2)
+
+        row3_col1.metric(
+            "預估輸出 Token",
+            estimate["estimated_output_tokens_text"],
+        )
+
+        row3_col2.metric(
+            "已有詳細筆記快取",
+            f"{estimate['note_cache_count']} 份",
+        )
+
+        st.info(
+            f"預估處理時間：**{estimate['estimated_time_text']}**"
+        )
+
+        st.caption(
+            "本次預計分析圖片：會建立的 PDF 頁面圖片分析快取數量。"
+        )
+
+        st.caption(
+            "本次預計生成詳細筆記：會建立的 Module 詳細筆記快取數量。"
+        )
+
+        return
+
+    st.markdown("##### 繼續未完成的 Notion 匯出預估")
+
+    top_col1, top_col2, top_col3 = st.columns(3)
+
+    top_col1.metric(
+        "主章節總數",
+        estimate["chapter_count"],
+    )
+
+    top_col2.metric(
+        "本次需處理",
+        estimate["pending_count"],
+    )
+
+    top_col3.metric(
+        "預估 AI 呼叫次數",
+        estimate["estimated_api_calls"],
+    )
+
+    token_col1, token_col2, token_col3 = st.columns(3)
+
+    token_col1.metric(
+        "預估輸入 Token",
+        estimate["estimated_input_tokens_text"],
+    )
+
+    token_col2.metric(
+        "預估輸出 Token",
+        estimate["estimated_output_tokens_text"],
+    )
+
+    token_col3.metric(
+        "預估總 Token",
+        estimate["estimated_total_tokens_text"],
+    )
+
+    detail_col1, detail_col2, detail_col3 = st.columns(3)
+
+    detail_col1.metric(
+        "本次預計分析圖片",
+        f"{estimate['need_visual_analysis_page_count']} 張",
+    )
+
+    detail_col2.metric(
+        "本次預計生成詳細筆記",
+        f"{estimate['need_note_generation_count']} 份",
+    )
+
+    detail_col3.metric(
+        "已有詳細筆記快取",
+        f"{estimate['note_cache_count']} 份",
+    )
+
+    st.info(
+        f"預估處理時間：**{estimate['estimated_time_text']}**"
+    )
+
+    if estimate["pending_count"] == 0:
+        st.success("所有 Module 已完成，不需要再續跑。")
+    else:
+        st.caption(
+            f"已完成 {estimate['completed_count']} 個 Module，"
+            "續跑時會跳過已成功建立的章節。"
+        )
+        
+def show_export_estimates(
+    document_name: str,
+    chapters: list[dict],
+    parsed_document: dict,
+) -> None:
+    """同時顯示續跑與重新建立的預估。"""
+
+    st.subheader("⏱️ 匯出前預估")
+
+    resume_estimate = estimate_document_export(
+        document_name=document_name,
+        chapters=chapters,
+        parsed_document=parsed_document,
+        resume=True,
+    )
+
+    new_export_estimate = estimate_document_export(
+        document_name=document_name,
+        chapters=chapters,
+        parsed_document=parsed_document,
+        resume=False,
+    )
+
+    with st.expander(
+        "繼續未完成的 Notion 匯出預估",
+        expanded=True,
+    ):
+        _show_single_export_estimate(
+            title="續跑模式",
+            estimate=resume_estimate,
+            is_resume_mode=True,
+        )
+
+    with st.expander(
+        "開始整份 Notion 匯出預估",
+        expanded=False,
+    ):
+        _show_single_export_estimate(
+            title="全新 Notion 匯出模式",
+            estimate=new_export_estimate,
+            is_resume_mode=False,
+        )
+
+
 def run_document_notion_export(
     document_name: str,
     chapters: list[dict],
@@ -564,6 +752,16 @@ def run_document_notion_export(
             0,
         )
 
+        cached_visual_count = export_result.get(
+            "cached_visual_count",
+            0,
+        )
+
+        cached_note_count = export_result.get(
+            "cached_note_count",
+            0,
+        )
+
         if export_result.get("is_finished", False):
             st.success(
                 f"完成：共建立 {completed_count} 個 Module 子頁面。"
@@ -578,6 +776,23 @@ def run_document_notion_export(
             st.info(
                 f"本次沒有需要執行的章節，"
                 f"已跳過 {skipped_count} 個已完成 Module。"
+            )
+
+        cache_col1, cache_col2 = st.columns(2)
+
+        cache_col1.metric(
+            "本次使用圖片分析快取",
+            f"{cached_visual_count} 個 Module",
+        )
+
+        cache_col2.metric(
+            "本次使用詳細筆記快取",
+            f"{cached_note_count} 個 Module",
+        )
+
+        if cached_visual_count or cached_note_count:
+            st.info(
+                "已直接讀取快取資料，這些 Module 不會重新進行對應的 AI 分析。"
             )
 
     except Exception as error:
@@ -868,10 +1083,19 @@ if "parsed_document" in st.session_state:
     st.divider()
     st.subheader("📚 整份文件分析與 Notion 匯出")
 
+    show_export_estimates(
+        document_name=uploaded_file.name,
+        chapters=chapters,
+        parsed_document=parsed_document,
+    )
+
     analysis_col, resume_col, restart_col = st.columns(3)
 
     with analysis_col:
-        if st.button("分析整份文件", type="primary"):
+        if st.button(
+            "分析整份文件",
+            type="primary",
+        ):
             with st.spinner("AI 正在分析所有內容並整合筆記..."):
                 try:
                     final_result, chunk_results = analyze_document(chunks)
@@ -899,7 +1123,8 @@ if "parsed_document" in st.session_state:
 
     with restart_col:
         if st.button(
-            "重新開始整份 Notion 匯出",
+            "開始整份 Notion 匯出",
+            type="primary",
         ):
             run_document_notion_export(
                 document_name=uploaded_file.name,
@@ -916,6 +1141,18 @@ if "parsed_document" in st.session_state:
         st.link_button(
             "開啟 Notion 詳細學習筆記",
             document_notion_result["parent_page_url"],
+        )
+
+        result_col1, result_col2 = st.columns(2)
+
+        result_col1.metric(
+            "圖片分析快取",
+            f"{document_notion_result.get('cached_visual_count', 0)} 個",
+        )
+
+        result_col2.metric(
+            "詳細筆記快取",
+            f"{document_notion_result.get('cached_note_count', 0)} 個",
         )
 
         failed_chapters = document_notion_result.get(
