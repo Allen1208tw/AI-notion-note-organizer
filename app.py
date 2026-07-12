@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import streamlit as st
+import streamlit.components.v1 as components
 
 from src.config.settings import OPENAI_MODEL, SUPPORTED_FILE_TYPES
 from src.exporters.json_exporter import build_json
@@ -21,6 +22,15 @@ from src.services.export_estimate_service import (
     estimate_document_export,
 )
 from src.services.file_validator import validate_file
+from src.services.learning_database_service import (
+    count_chapter_learning_items,
+    count_document_learning_items,
+    create_file_hash,
+    create_or_update_document,
+    mark_document_exporting,
+    save_chapter_learning_items,
+    update_document_export_result,
+)
 from src.services.notion_service import create_notion_page
 from src.services.openai_service import test_openai_connection
 from src.services.pdf_visual_service import analyze_chapter_visuals
@@ -53,10 +63,11 @@ def parse_uploaded_file(uploaded_file, extension: str) -> dict:
 
 
 def clear_previous_result() -> None:
-    """清除舊文件與分析結果。"""
+    """清除前一份文件的畫面與暫存分析資料。"""
 
     keys = [
         "current_file_name",
+        "current_document_id",
         "parsed_document",
         "cleaned_text",
         "chapters",
@@ -67,6 +78,7 @@ def clear_previous_result() -> None:
         "notion_page_url",
         "chapter_notes",
         "selected_chapter_note_id",
+        "scroll_to_chapter_note",
         "chapter_visual_contexts",
         "document_notion_result",
     ]
@@ -171,7 +183,7 @@ def show_chunk_result() -> None:
 
 
 def show_chapter_learning_note(chapter_note) -> None:
-    """顯示單一主章節的詳細學習筆記。"""
+    """顯示單一 Module 的詳細學習筆記。"""
 
     st.divider()
     st.header(f"📘 詳細學習筆記｜{chapter_note.chapter_title}")
@@ -284,12 +296,12 @@ def show_chapter_learning_note(chapter_note) -> None:
             {},
         )
 
-        selected_chapter_id = st.session_state.get(
+        selected_chapter_note_id = st.session_state.get(
             "selected_chapter_note_id"
         )
 
         current_visual_context = visual_contexts.get(
-            selected_chapter_id,
+            selected_chapter_note_id,
             [],
         )
 
@@ -364,7 +376,10 @@ def show_chapter_learning_note(chapter_note) -> None:
     st.subheader("❓ 章節 Quiz")
 
     if chapter_note.quiz:
-        for index, item in enumerate(chapter_note.quiz, start=1):
+        for index, item in enumerate(
+            chapter_note.quiz,
+            start=1,
+        ):
             with st.expander(f"第 {index} 題"):
                 st.write(f"Q：{item.question}")
                 st.write(f"A：{item.answer}")
@@ -439,7 +454,10 @@ def show_final_result(document_name: str) -> None:
     st.subheader("❓ Quiz")
 
     if final_result.quiz:
-        for index, item in enumerate(final_result.quiz, start=1):
+        for index, item in enumerate(
+            final_result.quiz,
+            start=1,
+        ):
             with st.expander(f"第 {index} 題"):
                 st.write(f"Q：{item.question}")
                 st.write(f"A：{item.answer}")
@@ -462,7 +480,10 @@ def show_final_result(document_name: str) -> None:
     st.divider()
     st.subheader("📤 匯出結果")
 
-    if st.button("建立 Notion 筆記頁面", type="primary"):
+    if st.button(
+        "建立 Notion 筆記頁面",
+        type="primary",
+    ):
         with st.spinner("正在建立 Notion 筆記頁面..."):
             try:
                 notion_page_url = create_notion_page(
@@ -519,8 +540,6 @@ def _show_single_export_estimate(
         return
 
     if not is_resume_mode:
-        st.markdown("##### 開始整份 Notion 匯出預估")
-
         row1_col1, row1_col2, row1_col3 = st.columns(3)
 
         row1_col1.metric(
@@ -572,16 +591,14 @@ def _show_single_export_estimate(
         )
 
         st.caption(
-            "本次預計分析圖片：會建立的 PDF 頁面圖片分析快取數量。"
+            "本次預計分析圖片：本次會建立的 PDF 圖片分析快取頁數。"
         )
 
         st.caption(
-            "本次預計生成詳細筆記：會建立的 Module 詳細筆記快取數量。"
+            "本次預計生成詳細筆記：本次會建立的 Module 詳細筆記快取數。"
         )
 
         return
-
-    st.markdown("##### 繼續未完成的 Notion 匯出預估")
 
     top_col1, top_col2, top_col3 = st.columns(3)
 
@@ -645,13 +662,14 @@ def _show_single_export_estimate(
             f"已完成 {estimate['completed_count']} 個 Module，"
             "續跑時會跳過已成功建立的章節。"
         )
-        
+
+
 def show_export_estimates(
     document_name: str,
     chapters: list[dict],
     parsed_document: dict,
 ) -> None:
-    """同時顯示續跑與重新建立的預估。"""
+    """顯示續跑與完整匯出的預估。"""
 
     st.subheader("⏱️ 匯出前預估")
 
@@ -698,6 +716,13 @@ def run_document_notion_export(
 ) -> None:
     """執行整份文件 Notion 匯出並顯示進度。"""
 
+    current_document_id = st.session_state.get(
+        "current_document_id"
+    )
+
+    if current_document_id:
+        mark_document_exporting(current_document_id)
+
     progress_bar = st.progress(0)
     progress_status = st.empty()
 
@@ -729,6 +754,12 @@ def run_document_notion_export(
 
         st.session_state["document_notion_result"] = export_result
 
+        if current_document_id:
+            update_document_export_result(
+                document_id=current_document_id,
+                export_result=export_result,
+            )
+
         progress_bar.progress(
             100,
             text="整份 Notion 詳細學習筆記處理完成。",
@@ -740,11 +771,6 @@ def run_document_notion_export(
 
         failed_count = len(
             export_result.get("failed_chapters", [])
-        )
-
-        skipped_count = export_result.get(
-            "skipped_chapter_count",
-            0,
         )
 
         processed_count = export_result.get(
@@ -773,10 +799,7 @@ def run_document_notion_export(
                 f"仍有 {failed_count} 個未完成。"
             )
         else:
-            st.info(
-                f"本次沒有需要執行的章節，"
-                f"已跳過 {skipped_count} 個已完成 Module。"
-            )
+            st.info("本次沒有需要執行的章節。")
 
         cache_col1, cache_col2 = st.columns(2)
 
@@ -792,7 +815,7 @@ def run_document_notion_export(
 
         if cached_visual_count or cached_note_count:
             st.info(
-                "已直接讀取快取資料，這些 Module 不會重新進行對應的 AI 分析。"
+                "已直接讀取快取資料，對應 Module 不會重新進行 AI 分析。"
             )
 
     except Exception as error:
@@ -822,10 +845,10 @@ uploaded_file = st.file_uploader(
     help=f"支援格式：{', '.join(SUPPORTED_FILE_TYPES)}",
 )
 
-if uploaded_file is None:
+if uploaded_file is None and "parsed_document" not in st.session_state:
     st.info("請先上傳 PDF、DOCX、TXT 或 Markdown 檔案。")
 
-else:
+if uploaded_file is not None:
     if (
         "current_file_name" in st.session_state
         and st.session_state["current_file_name"] != uploaded_file.name
@@ -852,6 +875,8 @@ else:
             try:
                 extension = Path(uploaded_file.name).suffix.lower()
 
+                file_bytes = uploaded_file.getvalue()
+
                 parsed_document = parse_uploaded_file(
                     uploaded_file,
                     extension,
@@ -871,7 +896,19 @@ else:
                     st.warning("文件清理後沒有可供分析的內容。")
                     st.stop()
 
+                file_hash = create_file_hash(file_bytes)
+
+                database_document = create_or_update_document(
+                    file_name=uploaded_file.name,
+                    file_extension=extension,
+                    file_size_bytes=uploaded_file.size,
+                    file_hash=file_hash,
+                    metadata=parsed_document["metadata"],
+                    chapters=chapters,
+                )
+
                 st.session_state["current_file_name"] = uploaded_file.name
+                st.session_state["current_document_id"] = database_document.id
                 st.session_state["parsed_document"] = parsed_document
                 st.session_state["cleaned_text"] = cleaned_text
                 st.session_state["chapters"] = chapters
@@ -883,10 +920,11 @@ else:
                 st.session_state.pop("notion_page_url", None)
                 st.session_state.pop("chapter_notes", None)
                 st.session_state.pop("selected_chapter_note_id", None)
+                st.session_state.pop("scroll_to_chapter_note", None)
                 st.session_state.pop("chapter_visual_contexts", None)
                 st.session_state.pop("document_notion_result", None)
 
-                st.success("檔案解析、文字清理、章節偵測與分段完成。")
+                st.success("檔案解析、章節偵測與 SQLite 文件紀錄建立完成。")
 
             except Exception as error:
                 st.error(f"文件處理失敗：{error}")
@@ -897,6 +935,11 @@ if "parsed_document" in st.session_state:
     cleaned_text = st.session_state["cleaned_text"]
     chapters = st.session_state.get("chapters", [])
     chunks = st.session_state["chunks"]
+
+    current_file_name = st.session_state.get(
+        "current_file_name",
+        metadata.get("file_name", "未命名文件"),
+    )
 
     st.divider()
     st.subheader("📄 文件解析結果")
@@ -917,6 +960,11 @@ if "parsed_document" in st.session_state:
         "檔案格式",
         metadata["file_extension"],
     )
+
+    if st.session_state.get("current_document_id"):
+        st.caption(
+            f"SQLite 文件 ID：{st.session_state['current_document_id']}"
+        )
 
     st.text_area(
         "清理後文字預覽",
@@ -946,10 +994,27 @@ if "parsed_document" in st.session_state:
             )
 
             with st.expander(chapter_title):
+                current_document_id = st.session_state.get(
+                    "current_document_id"
+                )
+
+                learning_item_counts = {
+                    "quiz_count": 0,
+                    "flashcard_count": 0,
+                }
+
+                if current_document_id:
+                    learning_item_counts = count_chapter_learning_items(
+                        document_id=current_document_id,
+                        source_chapter_id=str(chapter_id),
+                    )
+
                 st.caption(
                     f"標題來源：{chapter['source']}｜"
                     f"子章節數：{subsection_count}｜"
-                    f"字元數：{len(chapter['content'])}"
+                    f"字元數：{len(chapter['content'])}｜"
+                    f"Quiz：{learning_item_counts['quiz_count']} 題｜"
+                    f"Flash Cards：{learning_item_counts['flashcard_count']} 張"
                 )
 
                 st.text_area(
@@ -997,6 +1062,29 @@ if "parsed_document" in st.session_state:
                                 visual_context=visual_context,
                             )
 
+                            current_document_id = st.session_state.get(
+                                "current_document_id"
+                            )
+
+                            if current_document_id:
+                                save_result = save_chapter_learning_items(
+                                    document_id=current_document_id,
+                                    source_chapter_id=str(chapter_id),
+                                    chapter_note=chapter_note,
+                                )
+
+                                if save_result["saved"]:
+                                    st.success(
+                                        "已寫入 SQLite："
+                                        f"{save_result['quiz_count']} 題 Quiz、"
+                                        f"{save_result['flashcard_count']} 張 Flash Cards。"
+                                    )
+                                else:
+                                    st.warning(
+                                        "Quiz / Flash Cards 未寫入 SQLite："
+                                        f"{save_result['reason']}"
+                                    )
+
                             st.session_state["chapter_notes"][
                                 chapter_id
                             ] = chapter_note
@@ -1005,8 +1093,11 @@ if "parsed_document" in st.session_state:
                                 "selected_chapter_note_id"
                             ] = chapter_id
 
+                            st.session_state[
+                                "scroll_to_chapter_note"
+                            ] = True
+
                             st.success("詳細學習筆記生成完成。")
-                            st.rerun()
 
                         except Exception as error:
                             st.error(
@@ -1022,7 +1113,9 @@ if "parsed_document" in st.session_state:
                             "selected_chapter_note_id"
                         ] = chapter_id
 
-                        st.rerun()
+                        st.session_state[
+                            "scroll_to_chapter_note"
+                        ] = True
 
                 subsections = chapter.get("subsections", [])
 
@@ -1060,6 +1153,34 @@ if "parsed_document" in st.session_state:
         chapter_notes = st.session_state.get("chapter_notes", {})
 
         if selected_chapter_note_id in chapter_notes:
+            st.markdown(
+                '<div id="chapter-learning-note-detail"></div>',
+                unsafe_allow_html=True,
+            )
+
+            if st.session_state.get("scroll_to_chapter_note"):
+                components.html(
+                    """
+                    <script>
+                        setTimeout(function() {
+                            const target = window.parent.document.getElementById(
+                                "chapter-learning-note-detail"
+                            );
+
+                            if (target) {
+                                target.scrollIntoView({
+                                    behavior: "smooth",
+                                    block: "start"
+                                });
+                            }
+                        }, 600);
+                    </script>
+                    """,
+                    height=0,
+                )
+
+                st.session_state["scroll_to_chapter_note"] = False
+
             show_chapter_learning_note(
                 chapter_notes[selected_chapter_note_id]
             )
@@ -1083,8 +1204,29 @@ if "parsed_document" in st.session_state:
     st.divider()
     st.subheader("📚 整份文件分析與 Notion 匯出")
 
+    current_document_id = st.session_state.get(
+        "current_document_id"
+    )
+
+    if current_document_id:
+        document_learning_counts = count_document_learning_items(
+            current_document_id
+        )
+
+        learning_col1, learning_col2 = st.columns(2)
+
+        learning_col1.metric(
+            "已儲存 Quiz",
+            f"{document_learning_counts['quiz_count']} 題",
+        )
+
+        learning_col2.metric(
+            "已儲存 Flash Cards",
+            f"{document_learning_counts['flashcard_count']} 張",
+        )
+
     show_export_estimates(
-        document_name=uploaded_file.name,
+        document_name=current_file_name,
         chapters=chapters,
         parsed_document=parsed_document,
     )
@@ -1115,7 +1257,7 @@ if "parsed_document" in st.session_state:
             type="primary",
         ):
             run_document_notion_export(
-                document_name=uploaded_file.name,
+                document_name=current_file_name,
                 chapters=chapters,
                 parsed_document=parsed_document,
                 resume=True,
@@ -1127,7 +1269,7 @@ if "parsed_document" in st.session_state:
             type="primary",
         ):
             run_document_notion_export(
-                document_name=uploaded_file.name,
+                document_name=current_file_name,
                 chapters=chapters,
                 parsed_document=parsed_document,
                 resume=False,
@@ -1189,5 +1331,10 @@ if "parsed_document" in st.session_state:
 
 show_chunk_result()
 
-if uploaded_file is not None:
-    show_final_result(uploaded_file.name)
+if "parsed_document" in st.session_state:
+    current_file_name = st.session_state.get(
+        "current_file_name",
+        "未命名文件",
+    )
+
+    show_final_result(current_file_name)

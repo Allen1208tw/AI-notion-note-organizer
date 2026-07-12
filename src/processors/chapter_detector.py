@@ -1,519 +1,776 @@
+from __future__ import annotations
+
 import re
+from dataclasses import dataclass
 
 
-MAIN_CHAPTER_PATTERN = re.compile(
-    r"""
-    ^
-    \s*
-    (?P<prefix>
-        m\s*o\s*d\s*u\s*l\s*e |
-        chapter |
-        unit
-    )
-    \s*
-    (?P<number>\d{1,3})
-    \s*[\.\-:：]?\s*
-    (?P<title>.*?)
-    \s*
-    $
-    """,
-    flags=re.IGNORECASE | re.VERBOSE,
-)
+@dataclass
+class HeadingMatch:
+    """章節標題匹配結果。"""
 
-CHINESE_CHAPTER_PATTERN = re.compile(
-    r"""
-    ^
-    \s*
-    第
-    \s*
-    (?P<number>[0-9一二三四五六七八九十百]+)
-    \s*
-    章
-    \s*[\.\-:：]?\s*
-    (?P<title>.*?)
-    \s*
-    $
-    """,
-    flags=re.VERBOSE,
-)
-
-NUMBERED_SECTION_PATTERN = re.compile(
-    r"""
-    ^
-    \s*
-    (?P<number>\d{1,3}(?:[-.]\d{1,3})+)
-    \s*[\.\-:：、]?\s*
-    (?P<title>.{2,120})
-    \s*
-    $
-    """,
-    flags=re.VERBOSE,
-)
-
-MARKDOWN_HEADING_PATTERN = re.compile(
-    r"^(?P<hashes>#{1,6})\s+(?P<title>.+?)\s*$"
-)
+    title: str
+    source: str
+    start_index: int
+    end_index: int
+    chapter_number: str = ""
 
 
-def _clean_title(title: str) -> str:
-    """清理標題中的多餘空白、頁碼與符號。"""
+def normalize_heading_text(text: str) -> str:
+    """標準化標題文字。"""
 
-    cleaned_title = re.sub(r"\s+", " ", title)
-    cleaned_title = cleaned_title.strip()
+    normalized = text.strip()
+    normalized = re.sub(r"\s+", " ", normalized)
+    normalized = normalized.replace("（", "(").replace("）", ")")
+    normalized = normalized.replace("＆", "&")
 
-    cleaned_title = re.sub(
-        r"\s+\d{1,3}$",
+    return normalized
+
+
+def normalize_for_compare(text: str) -> str:
+    """建立標題比對用文字。"""
+
+    normalized = normalize_heading_text(text)
+    normalized = normalized.lower()
+    normalized = re.sub(r"\s+", "", normalized)
+
+    return normalized
+
+
+def clean_heading_title(title: str) -> str:
+    """清理章節標題。"""
+
+    cleaned = normalize_heading_text(title)
+
+    cleaned = re.sub(
+        r"^\s*(module|chapter|unit)\s*[\d一二三四五六七八九十]+"
+        r"[\s：:.\-、]*",
         "",
-        cleaned_title,
+        cleaned,
+        flags=re.IGNORECASE,
     )
 
-    return cleaned_title.strip(" .:：-—_")
+    cleaned = re.sub(
+        r"^\s*第\s*[\d一二三四五六七八九十]+\s*[章節]\s*"
+        r"[\s：:.\-、]*",
+        "",
+        cleaned,
+    )
+
+    cleaned = re.sub(
+        r"^\s*\d+\s*[.、]\s*",
+        "",
+        cleaned,
+    )
+
+    return cleaned.strip()
 
 
-def _normalize_prefix(prefix: str) -> str:
-    """把 M o d u l e 正規化成 Module。"""
+def is_noise_line(line: str) -> bool:
+    """判斷是否為頁碼、空白或雜訊。"""
 
-    normalized_prefix = re.sub(r"\s+", "", prefix).lower()
+    text = line.strip()
 
-    prefix_map = {
-        "module": "Module",
-        "chapter": "Chapter",
-        "unit": "Unit",
-    }
+    if not text:
+        return True
 
-    return prefix_map.get(normalized_prefix, prefix.capitalize())
+    if re.fullmatch(r"\d+", text):
+        return True
 
+    if text.lower() in {
+        "目錄",
+        "contents",
+        "table of contents",
+    }:
+        return True
 
-def _is_valid_title(title: str) -> bool:
-    """避免程式碼、網址、頁碼、項目符號被當成標題。"""
-
-    cleaned_title = _clean_title(title)
-
-    if len(cleaned_title) < 2 or len(cleaned_title) > 120:
-        return False
-
-    if cleaned_title.isdigit():
-        return False
-
-    if "http://" in cleaned_title or "https://" in cleaned_title:
-        return False
-
-    if cleaned_title.startswith(
-        (
-            "<",
-            "{",
-            "}",
-            "//",
-            "/*",
-            "*",
-            "⚫",
-            "•",
-            "-",
-        )
-    ):
-        return False
-
-    if any(symbol in cleaned_title for symbol in ("<", ">", "{", "}")):
-        return False
-
-    return True
+    return False
 
 
-def _get_lines_with_indexes(text: str) -> list[dict]:
-    """保留每一行內容與其原始字元位置。"""
+def line_start_positions(text: str) -> list[tuple[str, int, int]]:
+    """取得每一行文字與其在全文中的起訖位置。"""
 
     lines = []
     current_index = 0
 
-    for raw_line in text.splitlines(keepends=True):
-        line_text = raw_line.rstrip("\r\n")
+    for line in text.splitlines(keepends=True):
+        raw_line = line.rstrip("\r\n")
+        start_index = current_index
+        end_index = current_index + len(line)
 
         lines.append(
-            {
-                "text": line_text,
-                "start_index": current_index,
-                "end_index": current_index + len(line_text),
-            }
+            (
+                raw_line,
+                start_index,
+                end_index,
+            )
         )
 
-        current_index += len(raw_line)
+        current_index = end_index
 
     return lines
 
 
-def _find_next_possible_title(
-    lines: list[dict],
-    current_line_index: int,
-) -> str:
+def extract_module_style_headings(text: str) -> list[HeadingMatch]:
     """
-    當 Module 只有寫 Module 1 時，
-    從接下來幾行找可能的章節標題。
+    偵測 Module / Chapter / Unit 類型章節。
+
+    適用：
+    Module 1 xxx
+    Chapter 1 xxx
+    Unit 1 xxx
+    M o d u l e 1 xxx
     """
 
-    for next_index in range(
-        current_line_index + 1,
-        min(current_line_index + 5, len(lines)),
-    ):
-        candidate = _clean_title(lines[next_index]["text"])
+    matches: list[HeadingMatch] = []
+    line_positions = line_start_positions(text)
 
-        if not candidate:
+    heading_pattern = re.compile(
+        r"^\s*"
+        r"(?P<prefix>"
+        r"module|m\s*o\s*d\s*u\s*l\s*e|"
+        r"chapter|c\s*h\s*a\s*p\s*t\s*e\s*r|"
+        r"unit|u\s*n\s*i\s*t"
+        r")"
+        r"\s*"
+        r"(?P<number>[\d一二三四五六七八九十]+)"
+        r"[\s：:.\-、]*"
+        r"(?P<title>.+)?"
+        r"\s*$",
+        flags=re.IGNORECASE,
+    )
+
+    for line, start_index, end_index in line_positions:
+        normalized_line = normalize_heading_text(line)
+
+        match = heading_pattern.match(normalized_line)
+
+        if not match:
             continue
 
-        if candidate.isdigit():
-            continue
+        title = match.group("title") or normalized_line
+        title = clean_heading_title(title)
 
-        if candidate.startswith(
-            (
-                "⚫",
-                "•",
-                "-",
-                "<",
-                "{",
-                "}",
+        if not title:
+            title = normalized_line
+
+        matches.append(
+            HeadingMatch(
+                title=title,
+                source="module_heading",
+                start_index=start_index,
+                end_index=end_index,
+                chapter_number=match.group("number"),
             )
-        ):
-            continue
+        )
 
-        if len(candidate) > 80:
-            continue
-
-        if _is_valid_title(candidate):
-            return candidate
-
-    return ""
+    return deduplicate_heading_matches(matches)
 
 
-def _detect_main_chapters(text: str) -> list[dict]:
-    """只抓真正的大章節，例如 Module、Chapter、Unit、第 X 章。"""
+def extract_numbered_chapter_headings(text: str) -> list[HeadingMatch]:
+    """
+    偵測一般編號章節。
 
-    main_chapters = []
-    lines = _get_lines_with_indexes(text)
+    適用：
+    1. 前言(Preface)
+    2. MySQL8.0 安裝與設定
+    第 1 章 xxx
+    """
 
-    for line_index, line_data in enumerate(lines):
-        raw_line = line_data["text"]
-        stripped_line = raw_line.strip()
+    matches: list[HeadingMatch] = []
+    line_positions = line_start_positions(text)
 
-        if not stripped_line:
-            continue
+    numbered_pattern = re.compile(
+        r"^\s*(?P<number>\d{1,2})\s*[.、]\s*(?P<title>.+?)\s*$"
+    )
 
-        main_match = MAIN_CHAPTER_PATTERN.match(stripped_line)
+    chinese_chapter_pattern = re.compile(
+        r"^\s*第\s*(?P<number>[\d一二三四五六七八九十]+)\s*[章節]\s*"
+        r"(?P<title>.+?)\s*$"
+    )
 
-        if main_match:
-            prefix = _normalize_prefix(main_match.group("prefix"))
-            number = main_match.group("number")
-            raw_title = _clean_title(main_match.group("title"))
+    for line, start_index, end_index in line_positions:
+        normalized_line = normalize_heading_text(line)
 
-            if not raw_title:
-                raw_title = _find_next_possible_title(
-                    lines,
-                    line_index,
+        numbered_match = numbered_pattern.match(normalized_line)
+
+        if numbered_match:
+            title = clean_heading_title(
+                numbered_match.group("title")
+            )
+
+            if title and len(title) <= 80:
+                matches.append(
+                    HeadingMatch(
+                        title=title,
+                        source="numbered_heading",
+                        start_index=start_index,
+                        end_index=end_index,
+                        chapter_number=numbered_match.group("number"),
+                    )
                 )
 
-            title = f"{prefix} {number}"
-
-            if raw_title:
-                title = f"{title}｜{raw_title}"
-
-            main_chapters.append(
-                {
-                    "title": title,
-                    "number": number,
-                    "source": "main_chapter",
-                    "start_index": line_data["start_index"],
-                    "end_index": line_data["end_index"],
-                }
-            )
-
             continue
 
-        chinese_match = CHINESE_CHAPTER_PATTERN.match(stripped_line)
+        chinese_match = chinese_chapter_pattern.match(normalized_line)
 
         if chinese_match:
-            number = chinese_match.group("number")
-            raw_title = _clean_title(chinese_match.group("title"))
-
-            if not raw_title:
-                raw_title = _find_next_possible_title(
-                    lines,
-                    line_index,
-                )
-
-            title = f"第 {number} 章"
-
-            if raw_title:
-                title = f"{title}｜{raw_title}"
-
-            main_chapters.append(
-                {
-                    "title": title,
-                    "number": number,
-                    "source": "chinese_chapter",
-                    "start_index": line_data["start_index"],
-                    "end_index": line_data["end_index"],
-                }
+            title = clean_heading_title(
+                chinese_match.group("title")
             )
 
-    return main_chapters
+            if title and len(title) <= 80:
+                matches.append(
+                    HeadingMatch(
+                        title=title,
+                        source="chinese_chapter_heading",
+                        start_index=start_index,
+                        end_index=end_index,
+                        chapter_number=chinese_match.group("number"),
+                    )
+                )
+
+    return deduplicate_heading_matches(matches)
 
 
-def _detect_subsections(text: str) -> list[dict]:
-    """抓 1-1、2-3、17-1 這類子章節。"""
+def extract_toc_titles(text: str) -> list[str]:
+    """
+    從目錄頁抽出章節標題。
 
-    subsections = []
-    lines = _get_lines_with_indexes(text)
+    適用：
+    1. 前言(Preface)
+    2. MySQL8.0 安裝與設定
+       (Installation & Settings)
+    3. 基本查詢(Basic Query)
+    """
 
-    for line_data in lines:
-        stripped_line = line_data["text"].strip()
+    lines = [
+        normalize_heading_text(line)
+        for line in text.splitlines()
+    ]
 
-        if not stripped_line:
+    toc_titles: list[str] = []
+
+    numbered_pattern = re.compile(
+        r"^\s*(?P<number>\d{1,2})\s*[.、]\s*(?P<title>.+?)\s*$"
+    )
+
+    max_scan_lines = min(
+        len(lines),
+        300,
+    )
+
+    index = 0
+
+    while index < max_scan_lines:
+        line = lines[index]
+
+        match = numbered_pattern.match(line)
+
+        if not match:
+            index += 1
             continue
 
-        section_match = NUMBERED_SECTION_PATTERN.match(stripped_line)
+        title = match.group("title").strip()
 
-        if not section_match:
+        if not title:
+            index += 1
             continue
 
-        number = section_match.group("number")
-        raw_title = _clean_title(section_match.group("title"))
+        next_line = ""
 
-        if not _is_valid_title(raw_title):
+        if index + 1 < max_scan_lines:
+            next_line = lines[index + 1].strip()
+
+        should_merge_next_line = (
+            next_line.startswith("(")
+            and next_line.endswith(")")
+        )
+
+        if should_merge_next_line:
+            title = f"{title} {next_line}"
+            index += 1
+
+        cleaned_title = clean_heading_title(title)
+
+        if (
+            cleaned_title
+            and len(cleaned_title) <= 100
+            and cleaned_title not in toc_titles
+        ):
+            toc_titles.append(cleaned_title)
+
+        index += 1
+
+    return toc_titles
+
+
+def title_matches_toc_line(
+    line: str,
+    toc_title: str,
+) -> bool:
+    """
+    判斷某一行是否等於目錄中的章節標題。
+
+    允許：
+    MySQL8.0 安裝與設定 (Installation & Settings)
+    MySQL8.0安裝與設定(Installation & Settings)
+    """
+
+    compare_line = normalize_for_compare(line)
+    compare_title = normalize_for_compare(toc_title)
+
+    return compare_line == compare_title
+
+
+def extract_toc_based_headings(text: str) -> list[HeadingMatch]:
+    """
+    使用目錄標題反查正文中的章節位置。
+
+    重點：
+    這裡會先抓所有出現位置，
+    後面再交給 collapse_repeated_running_headers()
+    將連續重複的頁首合併成同一章。
+    """
+
+    toc_titles = extract_toc_titles(text)
+
+    if not toc_titles:
+        return []
+
+    matches: list[HeadingMatch] = []
+    line_positions = line_start_positions(text)
+
+    for line, start_index, end_index in line_positions:
+        if is_noise_line(line):
             continue
 
-        number_parts = re.split(r"[-.]", number)
+        normalized_line = normalize_heading_text(line)
 
-        if len(number_parts) < 2:
+        if len(normalized_line) > 120:
+            continue
+
+        for title in toc_titles:
+            if not title_matches_toc_line(normalized_line, title):
+                continue
+
+            matches.append(
+                HeadingMatch(
+                    title=title,
+                    source="toc_heading",
+                    start_index=start_index,
+                    end_index=end_index,
+                )
+            )
+
+            break
+
+    return deduplicate_heading_matches(matches)
+
+
+def deduplicate_heading_matches(
+    matches: list[HeadingMatch],
+) -> list[HeadingMatch]:
+    """去除相同位置的重複標題。"""
+
+    if not matches:
+        return []
+
+    sorted_matches = sorted(
+        matches,
+        key=lambda item: item.start_index,
+    )
+
+    deduplicated: list[HeadingMatch] = []
+    seen_positions: set[int] = set()
+
+    for match in sorted_matches:
+        if match.start_index in seen_positions:
+            continue
+
+        seen_positions.add(match.start_index)
+        deduplicated.append(match)
+
+    return deduplicated
+
+
+def remove_toc_duplicate_headings(
+    matches: list[HeadingMatch],
+) -> list[HeadingMatch]:
+    """
+    移除目錄頁中的標題，只保留正文真正章節位置。
+
+    同一個 title 第一次通常在目錄，
+    後面再次出現才是章節封面或正文標題。
+    """
+
+    if not matches:
+        return []
+
+    title_count: dict[str, int] = {}
+
+    for match in matches:
+        key = normalize_for_compare(match.title)
+        title_count[key] = title_count.get(key, 0) + 1
+
+    result: list[HeadingMatch] = []
+    seen_title_counter: dict[str, int] = {}
+
+    for match in matches:
+        key = normalize_for_compare(match.title)
+
+        seen_title_counter[key] = seen_title_counter.get(key, 0) + 1
+
+        if title_count[key] >= 2 and seen_title_counter[key] == 1:
+            continue
+
+        result.append(match)
+
+    return result
+
+
+def collapse_repeated_running_headers(
+    matches: list[HeadingMatch],
+) -> list[HeadingMatch]:
+    """
+    合併投影片每頁重複出現的章節頁首。
+
+    例如：
+    MySQL8.0安裝與設定
+    MySQL8.0安裝與設定
+    MySQL8.0安裝與設定
+    基本查詢
+    基本查詢
+
+    應該變成：
+    MySQL8.0安裝與設定
+    基本查詢
+    """
+
+    if not matches:
+        return []
+
+    collapsed: list[HeadingMatch] = []
+
+    for match in sorted(matches, key=lambda item: item.start_index):
+        if not collapsed:
+            collapsed.append(match)
+            continue
+
+        previous = collapsed[-1]
+
+        same_title = (
+            normalize_for_compare(previous.title)
+            == normalize_for_compare(match.title)
+        )
+
+        if same_title:
+            continue
+
+        collapsed.append(match)
+
+    return collapsed
+
+
+def filter_close_duplicate_headings(
+    matches: list[HeadingMatch],
+    min_distance: int = 80,
+) -> list[HeadingMatch]:
+    """
+    過濾距離太近的重複標題。
+
+    投影片常會有：
+    章節封面頁：表格(Tables)
+    下一頁頁首：表格(Tables)
+
+    如果距離太近，保留第一個。
+    """
+
+    if not matches:
+        return []
+
+    filtered: list[HeadingMatch] = []
+
+    for match in matches:
+        if not filtered:
+            filtered.append(match)
+            continue
+
+        previous = filtered[-1]
+
+        same_title = (
+            normalize_for_compare(previous.title)
+            == normalize_for_compare(match.title)
+        )
+
+        too_close = (
+            match.start_index - previous.start_index
+            < min_distance
+        )
+
+        if same_title and too_close:
+            continue
+
+        filtered.append(match)
+
+    return filtered
+
+
+def build_chapters_from_headings(
+    text: str,
+    headings: list[HeadingMatch],
+) -> list[dict]:
+    """依章節標題位置建立主章節資料。"""
+
+    chapters: list[dict] = []
+
+    if not headings:
+        return chapters
+
+    sorted_headings = sorted(
+        headings,
+        key=lambda item: item.start_index,
+    )
+
+    for index, heading in enumerate(
+        sorted_headings,
+        start=1,
+    ):
+        content_start = heading.start_index
+
+        if index < len(sorted_headings):
+            content_end = sorted_headings[index].start_index
+        else:
+            content_end = len(text)
+
+        content = text[content_start:content_end].strip()
+
+        if not content:
+            continue
+
+        chapter = {
+            "chapter_id": str(index),
+            "title": heading.title,
+            "source": heading.source,
+            "content": content,
+            "start_index": content_start,
+            "end_index": content_end,
+            "subsections": detect_subsections(
+                content,
+                parent_chapter_id=str(index),
+            ),
+        }
+
+        chapters.append(chapter)
+
+    return chapters
+
+
+def detect_subsections(
+    chapter_content: str,
+    parent_chapter_id: str,
+) -> list[dict]:
+    """
+    偵測子章節。
+
+    這版會避免把每一頁重複出現的主標題當成子章節。
+    """
+
+    subsections: list[dict] = []
+    line_positions = line_start_positions(chapter_content)
+
+    subsection_matches: list[HeadingMatch] = []
+
+    subsection_patterns = [
+        re.compile(
+            r"^\s*(?P<number>\d+[-.]\d+)\s*[：:.\-、]?\s*(?P<title>.+?)\s*$"
+        ),
+        re.compile(
+            r"^\s*[●]\s*(?P<title>.+?)\s*$"
+        ),
+    ]
+
+    for line, start_index, end_index in line_positions:
+        normalized_line = normalize_heading_text(line)
+
+        if is_noise_line(normalized_line):
+            continue
+
+        if len(normalized_line) > 100:
+            continue
+
+        for pattern in subsection_patterns:
+            match = pattern.match(normalized_line)
+
+            if not match:
+                continue
+
+            title = clean_heading_title(
+                match.group("title")
+            )
+
+            if not title:
+                continue
+
+            if len(title) > 80:
+                continue
+
+            subsection_matches.append(
+                HeadingMatch(
+                    title=title,
+                    source="subsection_heading",
+                    start_index=start_index,
+                    end_index=end_index,
+                    chapter_number=match.groupdict().get(
+                        "number",
+                        "",
+                    ),
+                )
+            )
+
+            break
+
+    subsection_matches = deduplicate_heading_matches(
+        subsection_matches
+    )
+
+    subsection_matches = collapse_repeated_running_headers(
+        subsection_matches
+    )
+
+    subsection_matches = filter_close_duplicate_headings(
+        subsection_matches,
+        min_distance=50,
+    )
+
+    if not subsection_matches:
+        return []
+
+    for index, heading in enumerate(
+        subsection_matches,
+        start=1,
+    ):
+        content_start = heading.start_index
+
+        if index < len(subsection_matches):
+            content_end = subsection_matches[index].start_index
+        else:
+            content_end = len(chapter_content)
+
+        content = chapter_content[content_start:content_end].strip()
+
+        if not content:
             continue
 
         subsections.append(
             {
-                "title": f"{number}｜{raw_title}",
-                "number": number,
-                "parent_number": number_parts[0],
-                "level": len(number_parts),
-                "source": "numbered_section",
-                "start_index": line_data["start_index"],
-                "end_index": line_data["end_index"],
+                "section_id": f"{parent_chapter_id}-{index}",
+                "title": heading.title,
+                "source": heading.source,
+                "content": content,
+                "start_index": content_start,
+                "end_index": content_end,
             }
         )
 
     return subsections
 
 
-def _detect_markdown_chapters(text: str) -> list[dict]:
-    """
-    當文件沒有 Module / Chapter / 第 X 章時，
-    才使用 Markdown 標題做主章節。
-    """
+def detect_fallback_single_chapter(text: str) -> list[dict]:
+    """無法偵測章節時，建立單一章節。"""
 
-    chapters = []
-    lines = _get_lines_with_indexes(text)
+    content = text.strip()
 
-    for line_data in lines:
-        stripped_line = line_data["text"].strip()
+    if not content:
+        return []
 
-        markdown_match = MARKDOWN_HEADING_PATTERN.match(stripped_line)
-
-        if not markdown_match:
-            continue
-
-        level = len(markdown_match.group("hashes"))
-        title = _clean_title(markdown_match.group("title"))
-
-        if not _is_valid_title(title):
-            continue
-
-        chapters.append(
-            {
-                "title": title,
-                "number": None,
-                "source": "markdown",
-                "level": level,
-                "start_index": line_data["start_index"],
-                "end_index": line_data["end_index"],
-            }
-        )
-
-    return chapters
-
-
-def _remove_duplicate_main_chapters(chapters: list[dict]) -> list[dict]:
-    """移除重複出現的主章節。"""
-
-    unique_chapters = []
-    seen_numbers = set()
-
-    for chapter in sorted(
-        chapters,
-        key=lambda item: item["start_index"],
-    ):
-        chapter_number = chapter["number"]
-
-        if chapter_number and chapter_number in seen_numbers:
-            continue
-
-        if chapter_number:
-            seen_numbers.add(chapter_number)
-
-        unique_chapters.append(chapter)
-
-    return unique_chapters
-
-
-def _build_subsections_for_parent(
-    parent_number: str,
-    chapter_start_index: int,
-    chapter_end_index: int,
-    all_subsections: list[dict],
-    text: str,
-) -> list[dict]:
-    """把符合主章節編號的子章節收進該主章節。"""
-
-    matched_subsections = []
-
-    for subsection in all_subsections:
-        is_inside_parent_range = (
-            chapter_start_index
-            <= subsection["start_index"]
-            < chapter_end_index
-        )
-
-        is_same_parent_number = (
-            subsection["parent_number"] == str(parent_number)
-        )
-
-        if not is_inside_parent_range:
-            continue
-
-        if not is_same_parent_number:
-            continue
-
-        matched_subsections.append(subsection)
-
-    matched_subsections.sort(
-        key=lambda item: item["start_index"]
-    )
-
-    formatted_subsections = []
-
-    for index, subsection in enumerate(matched_subsections):
-        subsection_start_index = subsection["start_index"]
-
-        if index + 1 < len(matched_subsections):
-            subsection_end_index = matched_subsections[
-                index + 1
-            ]["start_index"]
-        else:
-            subsection_end_index = chapter_end_index
-
-        subsection_content = text[
-            subsection_start_index:subsection_end_index
-        ].strip()
-
-        formatted_subsections.append(
-            {
-                "section_id": index + 1,
-                "title": subsection["title"],
-                "number": subsection["number"],
-                "level": subsection["level"],
-                "content": subsection_content,
-                "start_index": subsection_start_index,
-                "end_index": subsection_end_index,
-                "source": subsection["source"],
-            }
-        )
-
-    return formatted_subsections
+    return [
+        {
+            "chapter_id": "1",
+            "title": "整份文件",
+            "source": "fallback_single_chapter",
+            "content": content,
+            "start_index": 0,
+            "end_index": len(text),
+            "subsections": [],
+        }
+    ]
 
 
 def detect_chapters(text: str) -> list[dict]:
     """
-    偵測文件主章節與其子章節。
+    偵測文件主章節。
 
-    主章節：
-    - Module 1
-    - M o d u l e 1
-    - Chapter 1
-    - Unit 1
-    - 第 1 章
-
-    子章節：
-    - 1-1
-    - 2.3
-    - 17-1
-
-    回傳時只會把 Module / Chapter 當作 chapters。
-    子章節會放在該 chapter 的 subsections 欄位。
+    偵測順序：
+    1. Module / Chapter / Unit 格式
+    2. 目錄式投影片 PDF
+    3. 一般編號章節
+    4. fallback 單一章節
     """
 
     if not text or not text.strip():
         return []
 
-    main_chapters = _detect_main_chapters(text)
-    main_chapters = _remove_duplicate_main_chapters(main_chapters)
+    module_headings = extract_module_style_headings(text)
 
-    if not main_chapters:
-        markdown_chapters = _detect_markdown_chapters(text)
-
-        if markdown_chapters:
-            main_chapters = markdown_chapters
-
-    if not main_chapters:
-        return [
-            {
-                "chapter_id": 1,
-                "title": "文件內容",
-                "number": None,
-                "level": 1,
-                "content": text.strip(),
-                "start_index": 0,
-                "end_index": len(text),
-                "source": "fallback",
-                "subsections": [],
-            }
-        ]
-
-    all_subsections = _detect_subsections(text)
-    chapters = []
-
-    for index, main_chapter in enumerate(main_chapters):
-        chapter_start_index = main_chapter["start_index"]
-
-        if index + 1 < len(main_chapters):
-            chapter_end_index = main_chapters[
-                index + 1
-            ]["start_index"]
-        else:
-            chapter_end_index = len(text)
-
-        chapter_content = text[
-            chapter_start_index:chapter_end_index
-        ].strip()
-
-        parent_number = main_chapter.get("number")
-
-        if parent_number:
-            subsections = _build_subsections_for_parent(
-                parent_number=str(parent_number),
-                chapter_start_index=chapter_start_index,
-                chapter_end_index=chapter_end_index,
-                all_subsections=all_subsections,
-                text=text,
-            )
-        else:
-            subsections = []
-
-        chapters.append(
-            {
-                "chapter_id": len(chapters) + 1,
-                "title": main_chapter["title"],
-                "number": parent_number,
-                "level": 1,
-                "content": chapter_content,
-                "start_index": chapter_start_index,
-                "end_index": chapter_end_index,
-                "source": main_chapter["source"],
-                "subsections": subsections,
-            }
+    if len(module_headings) >= 2:
+        module_headings = remove_toc_duplicate_headings(
+            module_headings
         )
 
-    return chapters
+        module_headings = collapse_repeated_running_headers(
+            module_headings
+        )
+
+        module_headings = filter_close_duplicate_headings(
+            module_headings
+        )
+
+        if len(module_headings) >= 2:
+            return build_chapters_from_headings(
+                text=text,
+                headings=module_headings,
+            )
+
+    toc_headings = extract_toc_based_headings(text)
+
+    if len(toc_headings) >= 2:
+        toc_headings = remove_toc_duplicate_headings(
+            toc_headings
+        )
+
+        toc_headings = collapse_repeated_running_headers(
+            toc_headings
+        )
+
+        toc_headings = filter_close_duplicate_headings(
+            toc_headings
+        )
+
+        if len(toc_headings) >= 2:
+            return build_chapters_from_headings(
+                text=text,
+                headings=toc_headings,
+            )
+
+    numbered_headings = extract_numbered_chapter_headings(text)
+
+    if len(numbered_headings) >= 2:
+        numbered_headings = remove_toc_duplicate_headings(
+            numbered_headings
+        )
+
+        numbered_headings = collapse_repeated_running_headers(
+            numbered_headings
+        )
+
+        numbered_headings = filter_close_duplicate_headings(
+            numbered_headings
+        )
+
+        if len(numbered_headings) >= 2:
+            return build_chapters_from_headings(
+                text=text,
+                headings=numbered_headings,
+            )
+
+    return detect_fallback_single_chapter(text)
