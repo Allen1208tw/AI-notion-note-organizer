@@ -44,6 +44,113 @@ st.set_page_config(
 )
 
 
+def inject_full_text_css() -> None:
+    """避免 Streamlit 元件文字被省略號截斷。"""
+
+    st.markdown(
+        """
+        <style>
+        html,
+        body,
+        [class*="css"] {
+            white-space: normal !important;
+            overflow-wrap: anywhere !important;
+            word-break: break-word !important;
+        }
+
+        div[data-testid="stMarkdownContainer"],
+        div[data-testid="stMarkdownContainer"] p,
+        div[data-testid="stCaptionContainer"],
+        div[data-testid="stText"] {
+            white-space: normal !important;
+            overflow: visible !important;
+            text-overflow: clip !important;
+            overflow-wrap: anywhere !important;
+            word-break: break-word !important;
+        }
+
+        div[data-testid="stMetric"] {
+            min-width: 0 !important;
+            height: auto !important;
+            overflow: visible !important;
+        }
+
+        div[data-testid="stMetric"] label,
+        div[data-testid="stMetric"] label p,
+        div[data-testid="stMetric"] [data-testid="stMetricLabel"],
+        div[data-testid="stMetric"] [data-testid="stMetricLabel"] p,
+        div[data-testid="stMetric"] [data-testid="stMetricValue"],
+        div[data-testid="stMetric"] [data-testid="stMetricValue"] div {
+            white-space: normal !important;
+            overflow: visible !important;
+            text-overflow: clip !important;
+            overflow-wrap: anywhere !important;
+            word-break: break-word !important;
+            line-height: 1.35 !important;
+            max-width: none !important;
+            height: auto !important;
+        }
+
+        div[data-testid="stMetric"] [data-testid="stMetricLabel"] {
+            min-height: 2.7em !important;
+            align-items: flex-start !important;
+        }
+
+        div[data-testid="column"] {
+            min-width: 0 !important;
+        }
+
+        button,
+        button div,
+        button p,
+        a,
+        a div,
+        a p {
+            white-space: normal !important;
+            overflow: visible !important;
+            text-overflow: clip !important;
+            overflow-wrap: anywhere !important;
+            word-break: break-word !important;
+            height: auto !important;
+        }
+
+        div[data-baseweb="select"] span,
+        div[data-baseweb="select"] div,
+        li[role="option"] {
+            white-space: normal !important;
+            overflow: visible !important;
+            text-overflow: clip !important;
+            overflow-wrap: anywhere !important;
+            word-break: break-word !important;
+            height: auto !important;
+        }
+
+        details summary,
+        details summary span,
+        div[data-testid="stExpander"] summary,
+        div[data-testid="stExpander"] summary p {
+            white-space: normal !important;
+            overflow: visible !important;
+            text-overflow: clip !important;
+            overflow-wrap: anywhere !important;
+            word-break: break-word !important;
+        }
+
+        pre,
+        code {
+            white-space: pre-wrap !important;
+            overflow-wrap: anywhere !important;
+            word-break: break-word !important;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+inject_full_text_css()
+
+
 def parse_uploaded_file(uploaded_file, extension: str) -> dict:
     """依照副檔名使用對應 Parser。"""
 
@@ -90,11 +197,17 @@ def clear_previous_result() -> None:
 def show_callout(callout) -> None:
     """依照 Callout 類型顯示不同樣式。"""
 
-    content = f"**{callout.icon} {callout.title}**\n\n{callout.content}"
+    content = (
+        f"**{getattr(callout, 'icon', '📌')} "
+        f"{getattr(callout, 'title', '重點')}**\n\n"
+        f"{getattr(callout, 'content', '')}"
+    )
 
-    if callout.tone == "warning":
+    tone = getattr(callout, "tone", "info")
+
+    if tone == "warning":
         st.warning(content)
-    elif callout.tone == "success":
+    elif tone == "success":
         st.success(content)
     else:
         st.info(content)
@@ -103,24 +216,31 @@ def show_callout(callout) -> None:
 def show_comparison_table(table) -> None:
     """顯示 AI 回傳的比較表格。"""
 
-    if not table.headers or not table.rows:
+    headers = getattr(table, "headers", []) or []
+    rows = getattr(table, "rows", []) or []
+
+    if not headers or not rows:
         return
 
     formatted_rows = []
 
-    for row in table.rows:
+    for row in rows:
         row_data = {}
 
-        for index, header in enumerate(table.headers):
+        for index, header in enumerate(headers):
             row_data[header] = row[index] if index < len(row) else ""
 
         formatted_rows.append(row_data)
 
-    st.markdown(f"#### 📊 {table.title}")
+    st.markdown(
+        f"#### 📊 {getattr(table, 'title', '重點比較')}"
+    )
     st.table(formatted_rows)
 
-    if table.note:
-        st.caption(f"補充：{table.note}")
+    note = getattr(table, "note", "")
+
+    if note:
+        st.caption(f"補充：{note}")
 
 
 def show_chunk_result() -> None:
@@ -135,11 +255,17 @@ def show_chunk_result() -> None:
     st.subheader("🤖 第一段 AI 分析結果")
 
     st.subheader("📌 段落摘要")
-    st.write(getattr(result, "chunk_summary", "AI 沒有回傳摘要。"))
+    st.write(
+        getattr(
+            result,
+            "chunk_summary",
+            "AI 沒有回傳摘要。",
+        )
+    )
 
     st.subheader("🧠 重點整理")
 
-    key_points = getattr(result, "key_points", [])
+    key_points = getattr(result, "key_points", []) or []
 
     if key_points:
         for point in key_points:
@@ -149,7 +275,7 @@ def show_chunk_result() -> None:
 
     st.subheader("📚 關鍵術語")
 
-    terms = getattr(result, "terms", [])
+    terms = getattr(result, "terms", []) or []
 
     if terms:
         for term in terms:
@@ -159,24 +285,36 @@ def show_chunk_result() -> None:
 
     st.subheader("❓ Quiz 題目素材")
 
-    quiz_candidates = getattr(result, "quiz_candidates", [])
+    quiz_candidates = (
+        getattr(result, "quiz_candidates", []) or []
+    )
 
     if quiz_candidates:
         for item in quiz_candidates:
-            st.write(f"Q：{item.question}")
-            st.write(f"A：{item.answer}")
+            st.write(
+                f"Q：{getattr(item, 'question', '')}"
+            )
+            st.write(
+                f"A：{getattr(item, 'answer', '')}"
+            )
             st.divider()
     else:
         st.info("這次 AI 沒有回傳 Quiz 題目。")
 
     st.subheader("🗂️ Flash Card 素材")
 
-    flashcards = getattr(result, "flashcard_candidates", [])
+    flashcards = (
+        getattr(result, "flashcard_candidates", []) or []
+    )
 
     if flashcards:
         for card in flashcards:
-            st.write(f"正面：{card.front}")
-            st.write(f"背面：{card.back}")
+            st.write(
+                f"正面：{getattr(card, 'front', '')}"
+            )
+            st.write(
+                f"背面：{getattr(card, 'back', '')}"
+            )
             st.divider()
     else:
         st.info("這次 AI 沒有回傳 Flash Card。")
@@ -185,112 +323,202 @@ def show_chunk_result() -> None:
 def show_chapter_learning_note(chapter_note) -> None:
     """顯示單一 Module 的詳細學習筆記。"""
 
-    st.divider()
-    st.header(f"📘 詳細學習筆記｜{chapter_note.chapter_title}")
+    chapter_title = getattr(
+        chapter_note,
+        "chapter_title",
+        "未命名章節",
+    )
 
-    if chapter_note.callout_notes:
+    st.divider()
+    st.header(f"📘 詳細學習筆記｜{chapter_title}")
+
+    callout_notes = (
+        getattr(chapter_note, "callout_notes", []) or []
+    )
+
+    if callout_notes:
         st.subheader("✨ 重點標註")
 
-        for callout in chapter_note.callout_notes:
+        for callout in callout_notes:
             show_callout(callout)
 
     st.subheader("🎯 學習目標")
 
-    if chapter_note.learning_objectives:
-        for objective in chapter_note.learning_objectives:
+    learning_objectives = (
+        getattr(chapter_note, "learning_objectives", []) or []
+    )
+
+    if learning_objectives:
+        for objective in learning_objectives:
             st.write(f"- {objective}")
     else:
         st.info("這次沒有產生學習目標。")
 
     st.subheader("📝 章節摘要")
-    st.write(chapter_note.chapter_summary)
+    st.write(
+        getattr(chapter_note, "chapter_summary", "")
+    )
 
     st.subheader("🧠 白話講解")
-    st.write(chapter_note.plain_explanation)
+    st.write(
+        getattr(chapter_note, "plain_explanation", "")
+    )
 
     st.subheader("⭐ 核心重點")
 
-    if chapter_note.key_points:
-        for point in chapter_note.key_points:
+    key_points = (
+        getattr(chapter_note, "key_points", []) or []
+    )
+
+    if key_points:
+        for point in key_points:
             st.write(f"- {point}")
     else:
         st.info("這次沒有產生核心重點。")
 
     st.subheader("📚 重要術語")
 
-    if chapter_note.important_terms:
-        for term in chapter_note.important_terms:
+    important_terms = (
+        getattr(chapter_note, "important_terms", []) or []
+    )
+
+    if important_terms:
+        for term in important_terms:
             st.write(f"- {term}")
     else:
         st.info("這次沒有產生重要術語。")
 
     st.subheader("📌 語法規則與注意事項")
 
-    if chapter_note.syntax_rules:
-        for rule in chapter_note.syntax_rules:
+    syntax_rules = (
+        getattr(chapter_note, "syntax_rules", []) or []
+    )
+
+    if syntax_rules:
+        for rule in syntax_rules:
             st.write(f"- {rule}")
     else:
         st.info("這次沒有產生語法規則。")
 
-    if chapter_note.comparison_tables:
+    comparison_tables = (
+        getattr(chapter_note, "comparison_tables", []) or []
+    )
+
+    if comparison_tables:
         st.subheader("📊 重點比較表")
 
-        for table in chapter_note.comparison_tables:
+        for table in comparison_tables:
             show_comparison_table(table)
 
     st.subheader("💻 程式碼範例")
 
-    if chapter_note.code_examples:
+    code_examples = (
+        getattr(chapter_note, "code_examples", []) or []
+    )
+
+    if code_examples:
         for index, example in enumerate(
-            chapter_note.code_examples,
+            code_examples,
             start=1,
         ):
-            with st.expander(f"範例 {index}｜{example.title}"):
+            title = getattr(
+                example,
+                "title",
+                f"範例 {index}",
+            )
+
+            with st.expander(f"範例 {index}｜{title}"):
                 st.code(
-                    example.code,
-                    language=example.language,
+                    getattr(example, "code", ""),
+                    language=getattr(
+                        example,
+                        "language",
+                        "text",
+                    ),
                 )
-                st.write(example.explanation)
+                st.write(
+                    getattr(example, "explanation", "")
+                )
     else:
         st.info("這個章節沒有產生程式碼範例。")
 
     st.subheader("⚠️ 常見錯誤與混淆")
 
-    if chapter_note.common_mistakes:
+    common_mistakes = (
+        getattr(chapter_note, "common_mistakes", []) or []
+    )
+
+    if common_mistakes:
         for index, mistake in enumerate(
-            chapter_note.common_mistakes,
+            common_mistakes,
             start=1,
         ):
             with st.expander(f"常見錯誤 {index}"):
-                st.write(f"容易出錯：{mistake.mistake}")
-                st.write(f"正確觀念：{mistake.correction}")
+                st.write(
+                    f"容易出錯："
+                    f"{getattr(mistake, 'mistake', '')}"
+                )
+                st.write(
+                    f"正確觀念："
+                    f"{getattr(mistake, 'correction', '')}"
+                )
     else:
         st.info("這次沒有產生常見錯誤提醒。")
 
     st.subheader("🧩 子章節整理")
 
-    if chapter_note.subsections:
-        for subsection in chapter_note.subsections:
-            with st.expander(subsection.title):
-                st.write(subsection.summary)
+    subsections = (
+        getattr(chapter_note, "subsections", []) or []
+    )
 
-                if subsection.key_points:
+    if subsections:
+        for subsection in subsections:
+            with st.expander(
+                getattr(subsection, "title", "未命名子章節")
+            ):
+                st.write(
+                    getattr(subsection, "summary", "")
+                )
+
+                subsection_points = (
+                    getattr(
+                        subsection,
+                        "key_points",
+                        [],
+                    )
+                    or []
+                )
+
+                if subsection_points:
                     st.markdown("**重點：**")
 
-                    for point in subsection.key_points:
+                    for point in subsection_points:
                         st.write(f"- {point}")
 
-                if subsection.important_terms:
+                subsection_terms = (
+                    getattr(
+                        subsection,
+                        "important_terms",
+                        [],
+                    )
+                    or []
+                )
+
+                if subsection_terms:
                     st.markdown("**術語：**")
 
-                    for term in subsection.important_terms:
+                    for term in subsection_terms:
                         st.write(f"- {term}")
     else:
         st.info("這個主章節沒有子章節整理。")
 
     st.subheader("🖼️ PDF 圖片與畫面解讀")
 
-    if chapter_note.image_insights:
+    image_insights = (
+        getattr(chapter_note, "image_insights", []) or []
+    )
+
+    if image_insights:
         visual_contexts = st.session_state.get(
             "chapter_visual_contexts",
             {},
@@ -306,99 +534,185 @@ def show_chapter_learning_note(chapter_note) -> None:
         )
 
         image_url_map = {
-            item.get("page_number"): item.get("image_data_url")
+            item.get("page_number"): item.get(
+                "image_data_url"
+            )
             for item in current_visual_context
-            if item.get("image_data_url")
+            if isinstance(item, dict)
+            and item.get("image_data_url")
         }
 
-        for image in chapter_note.image_insights:
+        for image in image_insights:
+            page_number = getattr(
+                image,
+                "page_number",
+                "?",
+            )
+
+            title = getattr(
+                image,
+                "title",
+                "圖片解讀",
+            )
+
             with st.expander(
-                f"第 {image.page_number} 頁｜{image.title}"
+                f"第 {page_number} 頁｜{title}"
             ):
-                image_data_url = image_url_map.get(image.page_number)
+                image_data_url = image_url_map.get(
+                    page_number
+                )
 
                 if image_data_url:
                     st.image(
                         image_data_url,
-                        caption=f"PDF 第 {image.page_number} 頁",
+                        caption=f"PDF 第 {page_number} 頁",
                         use_container_width=True,
                     )
                 else:
-                    st.caption("此頁沒有保留可顯示的圖片資料。")
-
-                st.caption(f"圖片類型：{image.image_type}")
-                st.write(image.description)
-
-                if image.related_subsection:
-                    st.info(
-                        f"對應子章節：{image.related_subsection}"
+                    st.caption(
+                        "此頁沒有保留可顯示的圖片資料。"
                     )
 
-                if image.learning_points:
+                st.caption(
+                    f"圖片類型："
+                    f"{getattr(image, 'image_type', '')}"
+                )
+
+                st.write(
+                    getattr(image, "description", "")
+                )
+
+                related_subsection = getattr(
+                    image,
+                    "related_subsection",
+                    "",
+                )
+
+                if related_subsection:
+                    st.info(
+                        f"對應子章節：{related_subsection}"
+                    )
+
+                learning_points = (
+                    getattr(
+                        image,
+                        "learning_points",
+                        [],
+                    )
+                    or []
+                )
+
+                if learning_points:
                     st.markdown("**從圖片可學到：**")
 
-                    for point in image.learning_points:
+                    for point in learning_points:
                         st.write(f"- {point}")
     else:
-        st.info("這次沒有偵測到需要補充的圖片教學資訊。")
+        st.info(
+            "這次沒有偵測到需要補充的圖片教學資訊。"
+        )
 
     st.subheader("🧪 練習建議")
 
-    if chapter_note.practice_tips:
+    practice_tips = (
+        getattr(chapter_note, "practice_tips", []) or []
+    )
+
+    if practice_tips:
         for index, tip in enumerate(
-            chapter_note.practice_tips,
+            practice_tips,
             start=1,
         ):
-            with st.expander(f"練習 {index}｜{tip.title}"):
-                st.write(f"操作：{tip.instruction}")
+            title = getattr(
+                tip,
+                "title",
+                f"練習 {index}",
+            )
 
-                if tip.expected_result:
+            with st.expander(f"練習 {index}｜{title}"):
+                st.write(
+                    f"操作："
+                    f"{getattr(tip, 'instruction', '')}"
+                )
+
+                expected_result = getattr(
+                    tip,
+                    "expected_result",
+                    "",
+                )
+
+                if expected_result:
                     st.success(
-                        f"預期成果：{tip.expected_result}"
+                        f"預期成果：{expected_result}"
                     )
     else:
         st.info("這次沒有產生練習建議。")
 
     st.subheader("🗺️ 章節學習地圖")
 
-    is_mermaid_valid, mermaid_error = validate_mermaid(
-        chapter_note.mermaid
+    mermaid = getattr(chapter_note, "mermaid", "")
+    is_mermaid_valid, mermaid_error = (
+        validate_mermaid(mermaid)
     )
 
     if is_mermaid_valid:
         st.code(
-            chapter_note.mermaid,
+            mermaid,
             language="text",
         )
     else:
-        st.warning(f"Mermaid 圖表無法使用：{mermaid_error}")
+        st.warning(
+            f"Mermaid 圖表無法使用：{mermaid_error}"
+        )
 
     st.subheader("❓ 章節 Quiz")
 
-    if chapter_note.quiz:
+    quiz_items = (
+        getattr(chapter_note, "quiz", []) or []
+    )
+
+    if quiz_items:
         for index, item in enumerate(
-            chapter_note.quiz,
+            quiz_items,
             start=1,
         ):
             with st.expander(f"第 {index} 題"):
-                st.write(f"Q：{item.question}")
-                st.write(f"A：{item.answer}")
+                st.write(
+                    f"Q：{getattr(item, 'question', '')}"
+                )
+                st.write(
+                    f"A：{getattr(item, 'answer', '')}"
+                )
 
-                if item.explanation:
-                    st.write(f"說明：{item.explanation}")
+                explanation = getattr(
+                    item,
+                    "explanation",
+                    "",
+                )
+
+                if explanation:
+                    st.write(f"說明：{explanation}")
     else:
         st.info("這次沒有產生 Quiz。")
 
     st.subheader("🗂️ 章節 Flash Cards")
 
-    if chapter_note.flashcards:
+    flashcards = (
+        getattr(chapter_note, "flashcards", []) or []
+    )
+
+    if flashcards:
         for index, card in enumerate(
-            chapter_note.flashcards,
+            flashcards,
             start=1,
         ):
             with st.expander(f"Flash Card {index}"):
-                st.write(f"正面：{card.front}")
-                st.write(f"背面：{card.back}")
+                st.write(
+                    f"正面：{getattr(card, 'front', '')}"
+                )
+                st.write(
+                    f"背面：{getattr(card, 'back', '')}"
+                )
     else:
         st.info("這次沒有產生 Flash Cards。")
 
@@ -427,53 +741,76 @@ def show_final_result(document_name: str) -> None:
     st.subheader("📘 完整筆記整理結果")
 
     st.subheader("📝 文件摘要")
-    st.write(final_result.summary)
+    st.write(getattr(final_result, "summary", ""))
 
     st.subheader("🧠 重點整理")
 
-    if final_result.key_points:
-        for point in final_result.key_points:
+    key_points = (
+        getattr(final_result, "key_points", []) or []
+    )
+
+    if key_points:
+        for point in key_points:
             st.write(f"- {point}")
     else:
         st.info("這次沒有產生重點整理。")
 
     st.subheader("🗺️ Mermaid 圖表")
 
-    is_mermaid_valid, mermaid_error = validate_mermaid(
-        final_result.mermaid
+    mermaid = getattr(final_result, "mermaid", "")
+    is_mermaid_valid, mermaid_error = (
+        validate_mermaid(mermaid)
     )
 
     if is_mermaid_valid:
         st.code(
-            final_result.mermaid,
+            mermaid,
             language="text",
         )
     else:
-        st.warning(f"Mermaid 圖表無法使用：{mermaid_error}")
+        st.warning(
+            f"Mermaid 圖表無法使用：{mermaid_error}"
+        )
 
     st.subheader("❓ Quiz")
 
-    if final_result.quiz:
+    quiz_items = (
+        getattr(final_result, "quiz", []) or []
+    )
+
+    if quiz_items:
         for index, item in enumerate(
-            final_result.quiz,
+            quiz_items,
             start=1,
         ):
             with st.expander(f"第 {index} 題"):
-                st.write(f"Q：{item.question}")
-                st.write(f"A：{item.answer}")
+                st.write(
+                    f"Q：{getattr(item, 'question', '')}"
+                )
+                st.write(
+                    f"A：{getattr(item, 'answer', '')}"
+                )
     else:
         st.info("這次沒有產生 Quiz。")
 
     st.subheader("🗂️ Flash Cards")
 
-    if final_result.flashcards:
+    flashcards = (
+        getattr(final_result, "flashcards", []) or []
+    )
+
+    if flashcards:
         for index, card in enumerate(
-            final_result.flashcards,
+            flashcards,
             start=1,
         ):
             with st.expander(f"Flash Card {index}"):
-                st.write(f"正面：{card.front}")
-                st.write(f"背面：{card.back}")
+                st.write(
+                    f"正面：{getattr(card, 'front', '')}"
+                )
+                st.write(
+                    f"背面：{getattr(card, 'back', '')}"
+                )
     else:
         st.info("這次沒有產生 Flash Cards。")
 
@@ -491,11 +828,18 @@ def show_final_result(document_name: str) -> None:
                     analysis_result=final_result,
                 )
 
-                st.session_state["notion_page_url"] = notion_page_url
-                st.success("Notion 筆記頁面建立完成。")
+                st.session_state[
+                    "notion_page_url"
+                ] = notion_page_url
+
+                st.success(
+                    "Notion 筆記頁面建立完成。"
+                )
 
             except Exception as error:
-                st.error(f"建立 Notion 頁面失敗：{error}")
+                st.error(
+                    f"建立 Notion 頁面失敗：{error}"
+                )
 
     if "notion_page_url" in st.session_state:
         st.link_button(
@@ -526,6 +870,436 @@ def show_final_result(document_name: str) -> None:
         )
 
 
+def _safe_int(value, default: int = 0) -> int:
+    """安全轉成整數。"""
+
+    try:
+        if value is None:
+            return default
+
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _normalize_export_items(items) -> list:
+    """將匯出結果安全轉換成 List。"""
+
+    if items is None:
+        return []
+
+    if isinstance(items, list):
+        return items
+
+    if isinstance(items, (tuple, set)):
+        return list(items)
+
+    return [items]
+
+
+def _get_export_chapter_id(item) -> str:
+    """從不同格式的匯出結果取得章節 ID。"""
+
+    if isinstance(item, dict):
+        value = (
+            item.get("chapter_id")
+            or item.get("source_chapter_id")
+            or item.get("chapter_order")
+            or item.get("id")
+        )
+
+        return (
+            str(value).strip()
+            if value is not None
+            else ""
+        )
+
+    if isinstance(item, (str, int)):
+        return str(item).strip()
+
+    value = (
+        getattr(item, "chapter_id", None)
+        or getattr(item, "source_chapter_id", None)
+        or getattr(item, "chapter_order", None)
+        or getattr(item, "id", None)
+    )
+
+    return (
+        str(value).strip()
+        if value is not None
+        else ""
+    )
+
+
+def _get_source_chapter_id(chapter, index: int) -> str:
+    """取得原始章節 ID。"""
+
+    if isinstance(chapter, dict):
+        value = (
+            chapter.get("chapter_id")
+            or chapter.get("source_chapter_id")
+            or chapter.get("chapter_order")
+            or index
+        )
+    else:
+        value = (
+            getattr(chapter, "chapter_id", None)
+            or getattr(
+                chapter,
+                "source_chapter_id",
+                None,
+            )
+            or getattr(chapter, "chapter_order", None)
+            or index
+        )
+
+    return str(value).strip()
+
+
+def _failed_item_has_real_error(item) -> bool:
+    """判斷失敗項目是否有實際錯誤訊息。"""
+
+    if not isinstance(item, dict):
+        return False
+
+    error_message = str(
+        item.get("error")
+        or item.get("message")
+        or item.get("reason")
+        or ""
+    ).strip()
+
+    return bool(error_message)
+
+
+def _calculate_export_summary(
+    export_result: dict,
+    chapters: list[dict],
+) -> dict:
+    """
+    計算 Notion 匯出摘要。
+
+    規則：
+    1. 成功章節優先於舊失敗紀錄。
+    2. 支援字串、整數、字典及物件格式。
+    3. is_finished=True 時，全部章節視為成功。
+    4. 本次處理 0 個但續跑預估已無待處理章節時，
+       視為所有章節早已完成。
+    5. 不會僅因父頁面存在，就誤判所有子頁面成功。
+    """
+
+    if not isinstance(export_result, dict):
+        export_result = {}
+
+    chapters = chapters or []
+    total_count = len(chapters)
+
+    all_chapter_ids = {
+        _get_source_chapter_id(chapter, index)
+        for index, chapter in enumerate(
+            chapters,
+            start=1,
+        )
+    }
+
+    completed_items = _normalize_export_items(
+        export_result.get("completed_chapters")
+    )
+
+    failed_items = _normalize_export_items(
+        export_result.get("failed_chapters")
+    )
+
+    completed_ids = {
+        chapter_id
+        for chapter_id in (
+            _get_export_chapter_id(item)
+            for item in completed_items
+        )
+        if chapter_id
+    }
+
+    failed_ids = {
+        chapter_id
+        for chapter_id in (
+            _get_export_chapter_id(item)
+            for item in failed_items
+        )
+        if chapter_id
+    }
+
+    if all_chapter_ids:
+        completed_ids &= all_chapter_ids
+        failed_ids &= all_chapter_ids
+
+    actual_failed_ids = failed_ids - completed_ids
+
+    processed_count = _safe_int(
+        export_result.get(
+            "processed_chapter_count",
+            0,
+        )
+    )
+
+    reported_completed_count = _safe_int(
+        export_result.get(
+            "completed_chapter_count",
+            0,
+        )
+    )
+
+    reported_failed_count = _safe_int(
+        export_result.get(
+            "failed_chapter_count",
+            0,
+        )
+    )
+
+    reported_pending_count = _safe_int(
+        export_result.get(
+            "pending_chapter_count",
+            0,
+        )
+    )
+
+    is_finished = bool(
+        export_result.get("is_finished", False)
+    )
+
+    cached_note_count = _safe_int(
+        export_result.get(
+            "cached_note_count",
+            0,
+        )
+    )
+
+    parent_page_url = str(
+        export_result.get("parent_page_url")
+        or export_result.get("notion_parent_url")
+        or ""
+    ).strip()
+
+    parent_page_id = str(
+        export_result.get("parent_page_id")
+        or export_result.get("notion_parent_page_id")
+        or ""
+    ).strip()
+
+    has_notion_parent = bool(
+        parent_page_url or parent_page_id
+    )
+
+    # 續跑時若所有 Module 都命中完整詳細筆記快取，
+    # 且既有 Notion 父頁面仍存在，代表沒有 Module 需要重做。
+    #
+    # 舊版匯出狀態可能沒有回填 completed_chapters，
+    # 因而錯誤顯示「成功 0、等待全部」。
+    if (
+        total_count > 0
+        and processed_count == 0
+        and cached_note_count >= total_count
+        and has_notion_parent
+        and reported_failed_count == 0
+        and not any(
+            _failed_item_has_real_error(item)
+            for item in failed_items
+        )
+    ):
+        completed_ids = set(all_chapter_ids)
+        actual_failed_ids = set()
+        reported_completed_count = total_count
+        reported_pending_count = 0
+        is_finished = True
+
+    # Service 明確表示完成時，以完整章節數為準。
+    if is_finished and total_count > 0:
+        completed_ids = set(all_chapter_ids)
+        actual_failed_ids = set()
+
+    # 續跑時可能沒有重新處理任何章節，但狀態服務已判定沒有待處理。
+    if (
+        total_count > 0
+        and processed_count == 0
+        and reported_pending_count == 0
+        and reported_failed_count == 0
+        and reported_completed_count >= total_count
+    ):
+        completed_ids = set(all_chapter_ids)
+        actual_failed_ids = set()
+        is_finished = True
+
+    # 某些舊版會保留 failed_chapters，但同時回報已完成總數。
+    if (
+        total_count > 0
+        and reported_completed_count >= total_count
+    ):
+        completed_ids = set(all_chapter_ids)
+        actual_failed_ids = set()
+        is_finished = True
+
+    # failed_chapters 只有舊章節 ID、沒有實際 error，
+    # 且回傳明確表示已完成時，不再顯示為失敗。
+    has_real_failed_error = any(
+        _failed_item_has_real_error(item)
+        for item in failed_items
+    )
+
+    if (
+        is_finished
+        and not has_real_failed_error
+        and total_count > 0
+    ):
+        completed_ids = set(all_chapter_ids)
+        actual_failed_ids = set()
+
+    completed_count = len(completed_ids)
+    failed_count = len(actual_failed_ids)
+
+    # 向下相容只回傳數字、未回傳章節清單的 Service。
+    if completed_count == 0:
+        completed_count = min(
+            reported_completed_count,
+            total_count,
+        )
+
+    if failed_count == 0 and not is_finished:
+        failed_count = min(
+            reported_failed_count,
+            max(total_count - completed_count, 0),
+        )
+
+    pending_count = max(
+        total_count - completed_count - failed_count,
+        0,
+    )
+
+    if is_finished and total_count > 0:
+        completed_count = total_count
+        failed_count = 0
+        pending_count = 0
+
+    if (
+        total_count > 0
+        and completed_count >= total_count
+    ):
+        completed_count = total_count
+        failed_count = 0
+        pending_count = 0
+        is_finished = True
+        actual_failed_ids = set()
+
+    actual_failed_items = []
+
+    for item in failed_items:
+        chapter_id = _get_export_chapter_id(item)
+
+        if chapter_id in actual_failed_ids:
+            actual_failed_items.append(item)
+
+    return {
+        "total_count": total_count,
+        "processed_count": max(processed_count, 0),
+        "completed_count": completed_count,
+        "failed_count": failed_count,
+        "pending_count": pending_count,
+        "is_finished": is_finished,
+        "completed_chapter_ids": sorted(
+            completed_ids
+        ),
+        "failed_chapter_ids": sorted(
+            actual_failed_ids
+        ),
+        "failed_chapters": actual_failed_items,
+    }
+
+
+def _apply_export_summary_to_result(
+    export_result: dict,
+    export_summary: dict,
+) -> dict:
+    """把補正後的統計結果寫回匯出結果。"""
+
+    normalized_result = dict(export_result)
+
+    normalized_result["is_finished"] = (
+        export_summary["is_finished"]
+    )
+
+    normalized_result["completed_chapter_count"] = (
+        export_summary["completed_count"]
+    )
+
+    normalized_result["failed_chapter_count"] = (
+        export_summary["failed_count"]
+    )
+
+    normalized_result["pending_chapter_count"] = (
+        export_summary["pending_count"]
+    )
+
+    normalized_result["failed_chapters"] = (
+        export_summary["failed_chapters"]
+    )
+
+    # 當原始 completed_chapters 缺失，但統計已確認完成，
+    # 補成字串章節 ID，讓 SQLite 同步函式也能正確處理。
+    if export_summary["completed_chapter_ids"]:
+        original_completed = _normalize_export_items(
+            normalized_result.get(
+                "completed_chapters"
+            )
+        )
+
+        original_completed_ids = {
+            _get_export_chapter_id(item)
+            for item in original_completed
+            if _get_export_chapter_id(item)
+        }
+
+        if not original_completed_ids:
+            normalized_result["completed_chapters"] = [
+                {
+                    "chapter_id": chapter_id,
+                }
+                for chapter_id in export_summary[
+                    "completed_chapter_ids"
+                ]
+            ]
+
+    return normalized_result
+
+
+def _show_failed_export_chapter(
+    failed_chapter,
+) -> None:
+    """安全顯示匯出失敗章節。"""
+
+    if isinstance(failed_chapter, dict):
+        chapter_title = str(
+            failed_chapter.get("chapter_title")
+            or failed_chapter.get("title")
+            or failed_chapter.get("chapter_id")
+            or failed_chapter.get(
+                "source_chapter_id"
+            )
+            or "未知章節"
+        )
+
+        error_message = str(
+            failed_chapter.get("error")
+            or failed_chapter.get("message")
+            or failed_chapter.get("reason")
+            or "匯出未完成"
+        )
+    else:
+        chapter_title = str(failed_chapter)
+        error_message = "匯出未完成"
+
+    st.error(
+        f"{chapter_title}：{error_message}"
+    )
+
+
 def _show_single_export_estimate(
     title: str,
     estimate: dict,
@@ -533,69 +1307,98 @@ def _show_single_export_estimate(
 ) -> None:
     """顯示單一匯出模式的預估資訊。"""
 
+    estimate = (
+        estimate
+        if isinstance(estimate, dict)
+        else {}
+    )
+
+    chapter_count = _safe_int(
+        estimate.get("chapter_count", 0)
+    )
+
     st.markdown(f"#### {title}")
 
-    if estimate["chapter_count"] == 0:
+    if chapter_count == 0:
         st.info("目前沒有可匯出的主章節。")
         return
 
     if not is_resume_mode:
-        row1_col1, row1_col2, row1_col3 = st.columns(3)
+        row1_col1, row1_col2, row1_col3 = (
+            st.columns(3)
+        )
 
         row1_col1.metric(
             "主章節總數",
-            estimate["chapter_count"],
+            chapter_count,
         )
 
         row1_col2.metric(
             "預估 AI 呼叫次數",
-            estimate["estimated_api_calls"],
+            estimate.get(
+                "estimated_api_calls",
+                0,
+            ),
         )
 
         row1_col3.metric(
             "預估總 Token",
-            estimate["estimated_total_tokens_text"],
+            estimate.get(
+                "estimated_total_tokens_text",
+                "0",
+            ),
         )
 
-        row2_col1, row2_col2, row2_col3 = st.columns(3)
+        row2_col1, row2_col2, row2_col3 = (
+            st.columns(3)
+        )
 
         row2_col1.metric(
             "本次預計分析圖片",
-            f"{estimate['need_visual_analysis_page_count']} 張",
+            f"{estimate.get('need_visual_analysis_page_count', 0)} 張",
         )
 
         row2_col2.metric(
             "本次預計生成詳細筆記",
-            f"{estimate['need_note_generation_count']} 份",
+            f"{estimate.get('need_note_generation_count', 0)} 份",
         )
 
         row2_col3.metric(
             "預估輸入 Token",
-            estimate["estimated_input_tokens_text"],
+            estimate.get(
+                "estimated_input_tokens_text",
+                "0",
+            ),
         )
 
         row3_col1, row3_col2 = st.columns(2)
 
         row3_col1.metric(
             "預估輸出 Token",
-            estimate["estimated_output_tokens_text"],
+            estimate.get(
+                "estimated_output_tokens_text",
+                "0",
+            ),
         )
 
         row3_col2.metric(
             "已有詳細筆記快取",
-            f"{estimate['note_cache_count']} 份",
+            f"{estimate.get('note_cache_count', 0)} 份",
         )
 
         st.info(
-            f"預估處理時間：**{estimate['estimated_time_text']}**"
+            "預估處理時間："
+            f"**{estimate.get('estimated_time_text', '未知')}**"
         )
 
         st.caption(
-            "本次預計分析圖片：本次會建立的 PDF 圖片分析快取頁數。"
+            "本次預計分析圖片：本次會建立的 "
+            "PDF 圖片分析快取頁數。"
         )
 
         st.caption(
-            "本次預計生成詳細筆記：本次會建立的 Module 詳細筆記快取數。"
+            "本次預計生成詳細筆記：本次會建立的 "
+            "Module 詳細筆記快取數。"
         )
 
         return
@@ -604,63 +1407,85 @@ def _show_single_export_estimate(
 
     top_col1.metric(
         "主章節總數",
-        estimate["chapter_count"],
+        chapter_count,
     )
 
     top_col2.metric(
         "本次需處理",
-        estimate["pending_count"],
+        estimate.get("pending_count", 0),
     )
 
     top_col3.metric(
         "預估 AI 呼叫次數",
-        estimate["estimated_api_calls"],
+        estimate.get(
+            "estimated_api_calls",
+            0,
+        ),
     )
 
-    token_col1, token_col2, token_col3 = st.columns(3)
+    token_col1, token_col2, token_col3 = (
+        st.columns(3)
+    )
 
     token_col1.metric(
         "預估輸入 Token",
-        estimate["estimated_input_tokens_text"],
+        estimate.get(
+            "estimated_input_tokens_text",
+            "0",
+        ),
     )
 
     token_col2.metric(
         "預估輸出 Token",
-        estimate["estimated_output_tokens_text"],
+        estimate.get(
+            "estimated_output_tokens_text",
+            "0",
+        ),
     )
 
     token_col3.metric(
         "預估總 Token",
-        estimate["estimated_total_tokens_text"],
+        estimate.get(
+            "estimated_total_tokens_text",
+            "0",
+        ),
     )
 
-    detail_col1, detail_col2, detail_col3 = st.columns(3)
+    detail_col1, detail_col2, detail_col3 = (
+        st.columns(3)
+    )
 
     detail_col1.metric(
         "本次預計分析圖片",
-        f"{estimate['need_visual_analysis_page_count']} 張",
+        f"{estimate.get('need_visual_analysis_page_count', 0)} 張",
     )
 
     detail_col2.metric(
         "本次預計生成詳細筆記",
-        f"{estimate['need_note_generation_count']} 份",
+        f"{estimate.get('need_note_generation_count', 0)} 份",
     )
 
     detail_col3.metric(
         "已有詳細筆記快取",
-        f"{estimate['note_cache_count']} 份",
+        f"{estimate.get('note_cache_count', 0)} 份",
     )
 
     st.info(
-        f"預估處理時間：**{estimate['estimated_time_text']}**"
+        "預估處理時間："
+        f"**{estimate.get('estimated_time_text', '未知')}**"
     )
 
-    if estimate["pending_count"] == 0:
-        st.success("所有 Module 已完成，不需要再續跑。")
+    if _safe_int(
+        estimate.get("pending_count", 0)
+    ) == 0:
+        st.success(
+            "所有 Module 已完成，不需要再續跑。"
+        )
     else:
         st.caption(
-            f"已完成 {estimate['completed_count']} 個 Module，"
-            "續跑時會跳過已成功建立的章節。"
+            f"已完成 "
+            f"{estimate.get('completed_count', 0)} "
+            "個 Module，續跑時會跳過已成功建立的章節。"
         )
 
 
@@ -686,6 +1511,10 @@ def show_export_estimates(
         parsed_document=parsed_document,
         resume=False,
     )
+
+    st.session_state[
+        "resume_export_estimate"
+    ] = resume_estimate
 
     with st.expander(
         "繼續未完成的 Notion 匯出預估",
@@ -721,7 +1550,9 @@ def run_document_notion_export(
     )
 
     if current_document_id:
-        mark_document_exporting(current_document_id)
+        mark_document_exporting(
+            current_document_id
+        )
 
     progress_bar = st.progress(0)
     progress_status = st.empty()
@@ -731,7 +1562,19 @@ def run_document_notion_export(
         total: int,
         message: str,
     ) -> None:
-        progress_value = int((current / total) * 100)
+        safe_total = max(
+            _safe_int(total, 1),
+            1,
+        )
+
+        safe_current = min(
+            max(_safe_int(current), 0),
+            safe_total,
+        )
+
+        progress_value = int(
+            (safe_current / safe_total) * 100
+        )
 
         progress_bar.progress(
             progress_value,
@@ -739,7 +1582,8 @@ def run_document_notion_export(
         )
 
         progress_status.caption(
-            f"進度：{current} / {total} 個主章節"
+            f"進度：{safe_current} / "
+            f"{safe_total} 個主章節"
         )
 
     try:
@@ -752,89 +1596,240 @@ def run_document_notion_export(
             resume=resume,
         )
 
-        st.session_state["document_notion_result"] = export_result
+        if not isinstance(export_result, dict):
+            raise TypeError(
+                "Notion 匯出結果格式錯誤，預期為 dict。"
+            )
+
+        export_summary = _calculate_export_summary(
+            export_result=export_result,
+            chapters=chapters,
+        )
+
+        # 如果是續跑，而且預估已顯示沒有待處理章節，
+        # 但舊 Service 回傳 0 成功、舊失敗清單，
+        # 則以「續跑前狀態已全部完成」為準。
+        resume_estimate = st.session_state.get(
+            "resume_export_estimate",
+            {},
+        )
+
+        if (
+            resume
+            and isinstance(resume_estimate, dict)
+            and _safe_int(
+                resume_estimate.get(
+                    "chapter_count",
+                    0,
+                )
+            )
+            == len(chapters)
+            and _safe_int(
+                resume_estimate.get(
+                    "pending_count",
+                    0,
+                )
+            )
+            == 0
+            and _safe_int(
+                resume_estimate.get(
+                    "completed_count",
+                    0,
+                )
+            )
+            >= len(chapters)
+        ):
+            export_summary[
+                "completed_count"
+            ] = len(chapters)
+
+            export_summary[
+                "failed_count"
+            ] = 0
+
+            export_summary[
+                "pending_count"
+            ] = 0
+
+            export_summary[
+                "is_finished"
+            ] = True
+
+            export_summary[
+                "completed_chapter_ids"
+            ] = [
+                _get_source_chapter_id(
+                    chapter,
+                    index,
+                )
+                for index, chapter in enumerate(
+                    chapters,
+                    start=1,
+                )
+            ]
+
+            export_summary[
+                "failed_chapter_ids"
+            ] = []
+
+            export_summary[
+                "failed_chapters"
+            ] = []
+
+        normalized_result = (
+            _apply_export_summary_to_result(
+                export_result=export_result,
+                export_summary=export_summary,
+            )
+        )
+
+        st.session_state[
+            "document_notion_result"
+        ] = normalized_result
 
         if current_document_id:
             update_document_export_result(
                 document_id=current_document_id,
-                export_result=export_result,
+                export_result=normalized_result,
             )
 
         progress_bar.progress(
             100,
-            text="整份 Notion 詳細學習筆記處理完成。",
+            text=(
+                "整份 Notion 詳細學習筆記"
+                "處理完成。"
+            ),
         )
 
-        completed_count = len(
-            export_result.get("completed_chapters", [])
-        )
+        total_count = export_summary[
+            "total_count"
+        ]
 
-        failed_count = len(
-            export_result.get("failed_chapters", [])
-        )
+        processed_count = export_summary[
+            "processed_count"
+        ]
 
-        processed_count = export_result.get(
-            "processed_chapter_count",
-            0,
-        )
+        completed_count = export_summary[
+            "completed_count"
+        ]
 
-        cached_visual_count = export_result.get(
-            "cached_visual_count",
-            0,
-        )
+        failed_count = export_summary[
+            "failed_count"
+        ]
 
-        cached_note_count = export_result.get(
-            "cached_note_count",
-            0,
-        )
+        pending_count = export_summary[
+            "pending_count"
+        ]
 
-        if export_result.get("is_finished", False):
-            st.success(
-                f"完成：共建立 {completed_count} 個 Module 子頁面。"
+        is_finished = export_summary[
+            "is_finished"
+        ]
+
+        cached_visual_count = _safe_int(
+            normalized_result.get(
+                "cached_visual_count",
+                0,
             )
-        elif failed_count:
+        )
+
+        cached_note_count = _safe_int(
+            normalized_result.get(
+                "cached_note_count",
+                0,
+            )
+        )
+
+        if is_finished:
+            if processed_count > 0:
+                st.success(
+                    f"匯出完成：本次處理 "
+                    f"{processed_count} 個 Module；"
+                    f"共成功建立或確認 "
+                    f"{completed_count} / "
+                    f"{total_count} 個 Module 子頁面。"
+                )
+            else:
+                st.success(
+                    f"匯出完成：共成功建立或確認 "
+                    f"{completed_count} / "
+                    f"{total_count} 個 Module 子頁面。"
+                )
+
+        elif failed_count > 0:
             st.warning(
                 f"本次處理 {processed_count} 個 Module；"
                 f"目前成功 {completed_count} 個，"
-                f"仍有 {failed_count} 個未完成。"
+                f"失敗 {failed_count} 個，"
+                f"另有 {pending_count} 個尚未處理。"
             )
+
+        elif pending_count > 0:
+            st.info(
+                f"本次處理 {processed_count} 個 Module；"
+                f"目前成功 {completed_count} 個，"
+                f"尚有 {pending_count} 個等待處理。"
+            )
+
         else:
-            st.info("本次沒有需要執行的章節。")
+            st.info(
+                "目前沒有需要執行的 Module。"
+            )
 
         cache_col1, cache_col2 = st.columns(2)
 
-        cache_col1.metric(
-            "本次使用圖片分析快取",
-            f"{cached_visual_count} 個 Module",
-        )
+        with cache_col1:
+            st.markdown("**本次使用圖片分析快取**")
+            st.metric(
+                "圖片快取命中",
+                f"{cached_visual_count} 個 Module",
+                label_visibility="collapsed",
+            )
 
-        cache_col2.metric(
-            "本次使用詳細筆記快取",
-            f"{cached_note_count} 個 Module",
-        )
+        with cache_col2:
+            st.markdown("**本次使用詳細筆記快取**")
+            st.metric(
+                "筆記快取命中",
+                f"{cached_note_count} 個 Module",
+                label_visibility="collapsed",
+            )
 
         if cached_visual_count or cached_note_count:
             st.info(
-                "已直接讀取快取資料，對應 Module 不會重新進行 AI 分析。"
+                "已直接讀取快取資料，對應 Module "
+                "不會重新進行 AI 分析。"
             )
 
     except Exception as error:
         progress_bar.empty()
         progress_status.empty()
-        st.error(f"整份 Notion 詳細學習筆記建立失敗：{error}")
+
+        st.error(
+            "整份 Notion 詳細學習筆記建立失敗："
+            f"{error}"
+        )
 
 
 st.title("📝 AI Notion 筆記整理器")
-st.caption("上傳文件，自動整理成適合貼到 Notion 的結構化筆記。")
+st.caption(
+    "上傳文件，自動整理成適合貼到 Notion "
+    "的結構化筆記。"
+)
 
 if st.button("測試 AI 連線"):
-    with st.spinner("正在測試 OpenAI API 連線..."):
+    with st.spinner(
+        "正在測試 OpenAI API 連線..."
+    ):
         try:
-            connection_result = test_openai_connection()
+            connection_result = (
+                test_openai_connection()
+            )
+
             st.success(connection_result)
 
         except Exception as error:
-            st.error(f"AI 連線失敗：{error}")
+            st.error(
+                f"AI 連線失敗：{error}"
+            )
 
 st.divider()
 st.subheader("📤 上傳文件")
@@ -842,28 +1837,57 @@ st.subheader("📤 上傳文件")
 uploaded_file = st.file_uploader(
     "請選擇檔案",
     type=["pdf", "docx", "txt", "md"],
-    help=f"支援格式：{', '.join(SUPPORTED_FILE_TYPES)}",
+    help=(
+        f"支援格式："
+        f"{', '.join(SUPPORTED_FILE_TYPES)}"
+    ),
 )
 
-if uploaded_file is None and "parsed_document" not in st.session_state:
-    st.info("請先上傳 PDF、DOCX、TXT 或 Markdown 檔案。")
+if (
+    uploaded_file is None
+    and "parsed_document"
+    not in st.session_state
+):
+    st.info(
+        "請先上傳 PDF、DOCX、TXT 或 "
+        "Markdown 檔案。"
+    )
 
 if uploaded_file is not None:
     if (
-        "current_file_name" in st.session_state
-        and st.session_state["current_file_name"] != uploaded_file.name
+        "current_file_name"
+        in st.session_state
+        and st.session_state[
+            "current_file_name"
+        ]
+        != uploaded_file.name
     ):
         clear_previous_result()
 
-    file_size_mb = uploaded_file.size / (1024 * 1024)
+    file_size_mb = (
+        uploaded_file.size / (1024 * 1024)
+    )
 
     col1, col2, col3 = st.columns(3)
 
-    col1.metric("檔案名稱", uploaded_file.name)
-    col2.metric("檔案大小", f"{file_size_mb:.2f} MB")
-    col3.metric("AI 模型", OPENAI_MODEL)
+    col1.metric(
+        "檔案名稱",
+        uploaded_file.name,
+    )
 
-    is_valid, error_message = validate_file(uploaded_file)
+    col2.metric(
+        "檔案大小",
+        f"{file_size_mb:.2f} MB",
+    )
+
+    col3.metric(
+        "AI 模型",
+        OPENAI_MODEL,
+    )
+
+    is_valid, error_message = validate_file(
+        uploaded_file
+    )
 
     if not is_valid:
         st.error(error_message)
@@ -871,99 +1895,196 @@ if uploaded_file is not None:
     else:
         st.success("檔案驗證通過。")
 
-        if st.button("開始分析", type="primary"):
+        if st.button(
+            "開始分析",
+            type="primary",
+        ):
             try:
-                extension = Path(uploaded_file.name).suffix.lower()
+                extension = Path(
+                    uploaded_file.name
+                ).suffix.lower()
 
-                file_bytes = uploaded_file.getvalue()
-
-                parsed_document = parse_uploaded_file(
-                    uploaded_file,
-                    extension,
+                file_bytes = (
+                    uploaded_file.getvalue()
                 )
 
-                raw_text = parsed_document["raw_text"]
+                parsed_document = (
+                    parse_uploaded_file(
+                        uploaded_file,
+                        extension,
+                    )
+                )
+
+                raw_text = parsed_document[
+                    "raw_text"
+                ]
 
                 if not raw_text.strip():
-                    st.warning("這份文件沒有可讀取的文字內容。")
+                    st.warning(
+                        "這份文件沒有可讀取的文字內容。"
+                    )
                     st.stop()
 
-                chapters = detect_chapters(raw_text)
-                cleaned_text = clean_text(raw_text)
-                chunks = chunk_text(cleaned_text)
-
-                if not chunks:
-                    st.warning("文件清理後沒有可供分析的內容。")
-                    st.stop()
-
-                file_hash = create_file_hash(file_bytes)
-
-                database_document = create_or_update_document(
-                    file_name=uploaded_file.name,
-                    file_extension=extension,
-                    file_size_bytes=uploaded_file.size,
-                    file_hash=file_hash,
-                    metadata=parsed_document["metadata"],
-                    chapters=chapters,
+                chapters = detect_chapters(
+                    raw_text
                 )
 
-                st.session_state["current_file_name"] = uploaded_file.name
-                st.session_state["current_document_id"] = database_document.id
-                st.session_state["parsed_document"] = parsed_document
-                st.session_state["cleaned_text"] = cleaned_text
-                st.session_state["chapters"] = chapters
-                st.session_state["chunks"] = chunks
+                cleaned_text = clean_text(
+                    raw_text
+                )
 
-                st.session_state.pop("chunk_result", None)
-                st.session_state.pop("final_result", None)
-                st.session_state.pop("all_chunk_results", None)
-                st.session_state.pop("notion_page_url", None)
-                st.session_state.pop("chapter_notes", None)
-                st.session_state.pop("selected_chapter_note_id", None)
-                st.session_state.pop("scroll_to_chapter_note", None)
-                st.session_state.pop("chapter_visual_contexts", None)
-                st.session_state.pop("document_notion_result", None)
+                chunks = chunk_text(
+                    cleaned_text
+                )
 
-                st.success("檔案解析、章節偵測與 SQLite 文件紀錄建立完成。")
+                if not chunks:
+                    st.warning(
+                        "文件清理後沒有可供分析的內容。"
+                    )
+                    st.stop()
+
+                file_hash = create_file_hash(
+                    file_bytes
+                )
+
+                database_document = (
+                    create_or_update_document(
+                        file_name=uploaded_file.name,
+                        file_extension=extension,
+                        file_size_bytes=(
+                            uploaded_file.size
+                        ),
+                        file_hash=file_hash,
+                        metadata=parsed_document[
+                            "metadata"
+                        ],
+                        chapters=chapters,
+                    )
+                )
+
+                st.session_state[
+                    "current_file_name"
+                ] = uploaded_file.name
+
+                st.session_state[
+                    "current_document_id"
+                ] = database_document.id
+
+                st.session_state[
+                    "parsed_document"
+                ] = parsed_document
+
+                st.session_state[
+                    "cleaned_text"
+                ] = cleaned_text
+
+                st.session_state[
+                    "chapters"
+                ] = chapters
+
+                st.session_state[
+                    "chunks"
+                ] = chunks
+
+                reset_keys = [
+                    "chunk_result",
+                    "final_result",
+                    "all_chunk_results",
+                    "notion_page_url",
+                    "chapter_notes",
+                    "selected_chapter_note_id",
+                    "scroll_to_chapter_note",
+                    "chapter_visual_contexts",
+                    "document_notion_result",
+                    "resume_export_estimate",
+                ]
+
+                for key in reset_keys:
+                    st.session_state.pop(
+                        key,
+                        None,
+                    )
+
+                st.success(
+                    "檔案解析、章節偵測與 SQLite "
+                    "文件紀錄建立完成。"
+                )
 
             except Exception as error:
-                st.error(f"文件處理失敗：{error}")
+                st.error(
+                    f"文件處理失敗：{error}"
+                )
 
 if "parsed_document" in st.session_state:
-    parsed_document = st.session_state["parsed_document"]
-    metadata = parsed_document["metadata"]
-    cleaned_text = st.session_state["cleaned_text"]
-    chapters = st.session_state.get("chapters", [])
-    chunks = st.session_state["chunks"]
+    parsed_document = st.session_state[
+        "parsed_document"
+    ]
 
-    current_file_name = st.session_state.get(
-        "current_file_name",
-        metadata.get("file_name", "未命名文件"),
+    metadata = parsed_document.get(
+        "metadata",
+        {},
+    )
+
+    cleaned_text = st.session_state[
+        "cleaned_text"
+    ]
+
+    chapters = st.session_state.get(
+        "chapters",
+        [],
+    )
+
+    chunks = st.session_state[
+        "chunks"
+    ]
+
+    current_file_name = (
+        st.session_state.get(
+            "current_file_name",
+            metadata.get(
+                "file_name",
+                "未命名文件",
+            ),
+        )
     )
 
     st.divider()
     st.subheader("📄 文件解析結果")
 
-    preview_col1, preview_col2, preview_col3 = st.columns(3)
+    preview_col1, preview_col2, preview_col3 = (
+        st.columns(3)
+    )
 
     preview_col1.metric(
         "文字字數",
-        metadata["character_count"],
+        metadata.get(
+            "character_count",
+            len(cleaned_text),
+        ),
     )
 
     preview_col2.metric(
         "段落數量",
-        metadata["paragraph_count"],
+        metadata.get(
+            "paragraph_count",
+            0,
+        ),
     )
 
     preview_col3.metric(
         "檔案格式",
-        metadata["file_extension"],
+        metadata.get(
+            "file_extension",
+            "",
+        ),
     )
 
-    if st.session_state.get("current_document_id"):
+    if st.session_state.get(
+        "current_document_id"
+    ):
         st.caption(
-            f"SQLite 文件 ID：{st.session_state['current_document_id']}"
+            "SQLite 文件 ID："
+            f"{st.session_state['current_document_id']}"
         )
 
     st.text_area(
@@ -975,27 +2096,51 @@ if "parsed_document" in st.session_state:
     st.divider()
     st.subheader("📚 章節偵測結果")
 
-    st.metric("偵測到主章節數", len(chapters))
+    st.metric(
+        "偵測到主章節數",
+        len(chapters),
+    )
 
     if "chapter_notes" not in st.session_state:
-        st.session_state["chapter_notes"] = {}
+        st.session_state[
+            "chapter_notes"
+        ] = {}
 
-    if "chapter_visual_contexts" not in st.session_state:
-        st.session_state["chapter_visual_contexts"] = {}
+    if (
+        "chapter_visual_contexts"
+        not in st.session_state
+    ):
+        st.session_state[
+            "chapter_visual_contexts"
+        ] = {}
 
     if chapters:
-        for chapter in chapters:
-            chapter_id = chapter["chapter_id"]
-            subsection_count = len(chapter.get("subsections", []))
+        for chapter_index, chapter in enumerate(
+            chapters,
+            start=1,
+        ):
+            chapter_id = (
+                chapter.get("chapter_id")
+                or chapter_index
+            )
+
+            subsection_count = len(
+                chapter.get(
+                    "subsections",
+                    [],
+                )
+            )
 
             chapter_title = (
                 f"第 {chapter_id} 章｜"
-                f"{chapter['title']}"
+                f"{chapter.get('title', '未命名章節')}"
             )
 
             with st.expander(chapter_title):
-                current_document_id = st.session_state.get(
-                    "current_document_id"
+                current_document_id = (
+                    st.session_state.get(
+                        "current_document_id"
+                    )
                 )
 
                 learning_item_counts = {
@@ -1004,88 +2149,152 @@ if "parsed_document" in st.session_state:
                 }
 
                 if current_document_id:
-                    learning_item_counts = count_chapter_learning_items(
-                        document_id=current_document_id,
-                        source_chapter_id=str(chapter_id),
+                    learning_item_counts = (
+                        count_chapter_learning_items(
+                            document_id=(
+                                current_document_id
+                            ),
+                            source_chapter_id=str(
+                                chapter_id
+                            ),
+                        )
                     )
 
                 st.caption(
-                    f"標題來源：{chapter['source']}｜"
+                    f"標題來源："
+                    f"{chapter.get('source', '未知')}｜"
                     f"子章節數：{subsection_count}｜"
-                    f"字元數：{len(chapter['content'])}｜"
-                    f"Quiz：{learning_item_counts['quiz_count']} 題｜"
-                    f"Flash Cards：{learning_item_counts['flashcard_count']} 張"
+                    f"字元數："
+                    f"{len(chapter.get('content', ''))}｜"
+                    f"Quiz："
+                    f"{learning_item_counts.get('quiz_count', 0)} 題｜"
+                    f"Flash Cards："
+                    f"{learning_item_counts.get('flashcard_count', 0)} 張"
                 )
 
                 st.text_area(
-                    label=f"主章節內容預覽 {chapter_id}",
-                    value=chapter["content"][:3000],
+                    label=(
+                        f"主章節內容預覽 "
+                        f"{chapter_id}"
+                    ),
+                    value=chapter.get(
+                        "content",
+                        "",
+                    )[:3000],
                     height=250,
-                    key=f"chapter_preview_{chapter_id}",
+                    key=(
+                        f"chapter_preview_"
+                        f"{chapter_id}"
+                    ),
                 )
 
                 if st.button(
                     "生成詳細學習筆記",
-                    key=f"generate_chapter_note_{chapter_id}",
+                    key=(
+                        f"generate_chapter_note_"
+                        f"{chapter_id}"
+                    ),
                 ):
                     with st.spinner(
-                        f"AI 正在整理 {chapter['title']}..."
+                        "AI 正在整理 "
+                        f"{chapter.get('title', '此章節')}..."
                     ):
                         try:
                             visual_context = []
 
                             is_pdf = (
-                                metadata.get("file_extension") == ".pdf"
+                                metadata.get(
+                                    "file_extension"
+                                )
+                                == ".pdf"
                             )
 
-                            has_pdf_data = (
-                                parsed_document.get("pdf_bytes")
-                                and parsed_document.get("page_texts")
+                            has_pdf_data = bool(
+                                parsed_document.get(
+                                    "pdf_bytes"
+                                )
+                                and parsed_document.get(
+                                    "page_texts"
+                                )
                             )
 
-                            if is_pdf and has_pdf_data:
-                                visual_context = analyze_chapter_visuals(
-                                    chapter=chapter,
-                                    pdf_bytes=parsed_document["pdf_bytes"],
-                                    page_texts=parsed_document[
-                                        "page_texts"
-                                    ],
-                                    max_pages=3,
+                            if (
+                                is_pdf
+                                and has_pdf_data
+                            ):
+                                visual_context = (
+                                    analyze_chapter_visuals(
+                                        chapter=chapter,
+                                        pdf_bytes=(
+                                            parsed_document[
+                                                "pdf_bytes"
+                                            ]
+                                        ),
+                                        page_texts=(
+                                            parsed_document[
+                                                "page_texts"
+                                            ]
+                                        ),
+                                        max_pages=3,
+                                    )
                                 )
 
                                 st.session_state[
                                     "chapter_visual_contexts"
-                                ][chapter_id] = visual_context
+                                ][
+                                    chapter_id
+                                ] = visual_context
 
-                            chapter_note = analyze_chapter(
-                                chapter=chapter,
-                                visual_context=visual_context,
+                            chapter_note = (
+                                analyze_chapter(
+                                    chapter=chapter,
+                                    visual_context=(
+                                        visual_context
+                                    ),
+                                )
                             )
 
-                            current_document_id = st.session_state.get(
-                                "current_document_id"
+                            current_document_id = (
+                                st.session_state.get(
+                                    "current_document_id"
+                                )
                             )
 
                             if current_document_id:
-                                save_result = save_chapter_learning_items(
-                                    document_id=current_document_id,
-                                    source_chapter_id=str(chapter_id),
-                                    chapter_note=chapter_note,
+                                save_result = (
+                                    save_chapter_learning_items(
+                                        document_id=(
+                                            current_document_id
+                                        ),
+                                        source_chapter_id=str(
+                                            chapter_id
+                                        ),
+                                        chapter_note=(
+                                            chapter_note
+                                        ),
+                                    )
                                 )
 
-                                if save_result["saved"]:
+                                if save_result.get(
+                                    "saved"
+                                ):
                                     st.success(
                                         "已寫入 SQLite："
-                                        f"{save_result['quiz_count']} 題 Quiz、"
-                                        f"{save_result['flashcard_count']} 張 Flash Cards。"
+                                        f"{save_result.get('quiz_count', 0)} "
+                                        "題 Quiz、"
+                                        f"{save_result.get('flashcard_count', 0)} "
+                                        "張 Flash Cards。"
                                     )
                                 else:
                                     st.warning(
-                                        "Quiz / Flash Cards 未寫入 SQLite："
-                                        f"{save_result['reason']}"
+                                        "Quiz / Flash Cards "
+                                        "未寫入 SQLite："
+                                        f"{save_result.get('reason', '')}"
                                     )
 
-                            st.session_state["chapter_notes"][
+                            st.session_state[
+                                "chapter_notes"
+                            ][
                                 chapter_id
                             ] = chapter_note
 
@@ -1097,17 +2306,28 @@ if "parsed_document" in st.session_state:
                                 "scroll_to_chapter_note"
                             ] = True
 
-                            st.success("詳細學習筆記生成完成。")
+                            st.success(
+                                "詳細學習筆記生成完成。"
+                            )
 
                         except Exception as error:
                             st.error(
-                                f"章節學習筆記生成失敗：{error}"
+                                "章節學習筆記生成失敗："
+                                f"{error}"
                             )
 
-                if chapter_id in st.session_state["chapter_notes"]:
+                if (
+                    chapter_id
+                    in st.session_state[
+                        "chapter_notes"
+                    ]
+                ):
                     if st.button(
                         "查看這章詳細學習筆記",
-                        key=f"view_chapter_note_{chapter_id}",
+                        key=(
+                            f"view_chapter_note_"
+                            f"{chapter_id}"
+                        ),
                     ):
                         st.session_state[
                             "selected_chapter_note_id"
@@ -1117,55 +2337,91 @@ if "parsed_document" in st.session_state:
                             "scroll_to_chapter_note"
                         ] = True
 
-                subsections = chapter.get("subsections", [])
+                subsections = chapter.get(
+                    "subsections",
+                    [],
+                )
 
                 if subsections:
                     st.markdown("#### 子章節")
 
-                    for subsection in subsections:
-                        subsection_title = (
-                            f"{subsection['title']}｜"
-                            f"{len(subsection['content'])} 字元"
+                    for subsection_index, subsection in enumerate(
+                        subsections,
+                        start=1,
+                    ):
+                        section_id = (
+                            subsection.get(
+                                "section_id"
+                            )
+                            or subsection_index
                         )
 
-                        with st.expander(subsection_title):
+                        subsection_title = (
+                            f"{subsection.get('title', '未命名子章節')}｜"
+                            f"{len(subsection.get('content', ''))} 字元"
+                        )
+
+                        with st.expander(
+                            subsection_title
+                        ):
                             st.text_area(
                                 label=(
-                                    f"子章節內容預覽 "
+                                    "子章節內容預覽 "
                                     f"{chapter_id}_"
-                                    f"{subsection['section_id']}"
+                                    f"{section_id}"
                                 ),
-                                value=subsection["content"][:2000],
+                                value=subsection.get(
+                                    "content",
+                                    "",
+                                )[:2000],
                                 height=180,
                                 key=(
-                                    f"subsection_preview_"
+                                    "subsection_preview_"
                                     f"{chapter_id}_"
-                                    f"{subsection['section_id']}"
+                                    f"{section_id}"
                                 ),
                             )
                 else:
-                    st.info("此主章節未偵測到明確子章節。")
+                    st.info(
+                        "此主章節未偵測到明確子章節。"
+                    )
 
-        selected_chapter_note_id = st.session_state.get(
-            "selected_chapter_note_id"
+        selected_chapter_note_id = (
+            st.session_state.get(
+                "selected_chapter_note_id"
+            )
         )
 
-        chapter_notes = st.session_state.get("chapter_notes", {})
+        chapter_notes = st.session_state.get(
+            "chapter_notes",
+            {},
+        )
 
-        if selected_chapter_note_id in chapter_notes:
+        if (
+            selected_chapter_note_id
+            in chapter_notes
+        ):
             st.markdown(
-                '<div id="chapter-learning-note-detail"></div>',
+                (
+                    '<div id="'
+                    'chapter-learning-note-detail'
+                    '"></div>'
+                ),
                 unsafe_allow_html=True,
             )
 
-            if st.session_state.get("scroll_to_chapter_note"):
+            if st.session_state.get(
+                "scroll_to_chapter_note"
+            ):
                 components.html(
                     """
                     <script>
                         setTimeout(function() {
-                            const target = window.parent.document.getElementById(
-                                "chapter-learning-note-detail"
-                            );
+                            const target =
+                                window.parent.document
+                                .getElementById(
+                                    "chapter-learning-note-detail"
+                                );
 
                             if (target) {
                                 target.scrollIntoView({
@@ -1179,50 +2435,71 @@ if "parsed_document" in st.session_state:
                     height=0,
                 )
 
-                st.session_state["scroll_to_chapter_note"] = False
+                st.session_state[
+                    "scroll_to_chapter_note"
+                ] = False
 
             show_chapter_learning_note(
-                chapter_notes[selected_chapter_note_id]
+                chapter_notes[
+                    selected_chapter_note_id
+                ]
             )
 
     else:
-        st.info("未偵測到明確章節，系統將整份文件視為單一章節。")
+        st.info(
+            "未偵測到明確章節，系統將整份文件"
+            "視為單一章節。"
+        )
 
     st.divider()
     st.subheader("✂️ 文字分段預覽")
-    st.metric("分段總數", len(chunks))
+
+    st.metric(
+        "分段總數",
+        len(chunks),
+    )
 
     for chunk in chunks:
         title = (
-            f"第 {chunk['chunk_id']} 段｜"
-            f"{chunk['character_count']} 字元"
+            f"第 {chunk.get('chunk_id', '?')} 段｜"
+            f"{chunk.get('character_count', 0)} 字元"
         )
 
         with st.expander(title):
-            st.text(chunk["content"])
+            st.text(
+                chunk.get("content", "")
+            )
 
     st.divider()
-    st.subheader("📚 整份文件分析與 Notion 匯出")
+    st.subheader(
+        "📚 整份文件分析與 Notion 匯出"
+    )
 
-    current_document_id = st.session_state.get(
-        "current_document_id"
+    current_document_id = (
+        st.session_state.get(
+            "current_document_id"
+        )
     )
 
     if current_document_id:
-        document_learning_counts = count_document_learning_items(
-            current_document_id
+        document_learning_counts = (
+            count_document_learning_items(
+                current_document_id
+            )
         )
 
-        learning_col1, learning_col2 = st.columns(2)
+        learning_col1, learning_col2 = (
+            st.columns(2)
+        )
 
         learning_col1.metric(
             "已儲存 Quiz",
-            f"{document_learning_counts['quiz_count']} 題",
+            f"{document_learning_counts.get('quiz_count', 0)} 題",
         )
 
         learning_col2.metric(
             "已儲存 Flash Cards",
-            f"{document_learning_counts['flashcard_count']} 張",
+            f"{document_learning_counts.get('flashcard_count', 0)} 張",
         )
 
     show_export_estimates(
@@ -1231,25 +2508,44 @@ if "parsed_document" in st.session_state:
         parsed_document=parsed_document,
     )
 
-    analysis_col, resume_col, restart_col = st.columns(3)
+    analysis_col, resume_col, restart_col = (
+        st.columns(3)
+    )
 
     with analysis_col:
         if st.button(
             "分析整份文件",
             type="primary",
         ):
-            with st.spinner("AI 正在分析所有內容並整合筆記..."):
+            with st.spinner(
+                "AI 正在分析所有內容並整合筆記..."
+            ):
                 try:
-                    final_result, chunk_results = analyze_document(chunks)
+                    final_result, chunk_results = (
+                        analyze_document(chunks)
+                    )
 
-                    st.session_state["final_result"] = final_result
-                    st.session_state["all_chunk_results"] = chunk_results
-                    st.session_state.pop("notion_page_url", None)
+                    st.session_state[
+                        "final_result"
+                    ] = final_result
 
-                    st.success("完整文件分析完成。")
+                    st.session_state[
+                        "all_chunk_results"
+                    ] = chunk_results
+
+                    st.session_state.pop(
+                        "notion_page_url",
+                        None,
+                    )
+
+                    st.success(
+                        "完整文件分析完成。"
+                    )
 
                 except Exception as error:
-                    st.error(f"完整文件分析失敗：{error}")
+                    st.error(
+                        f"完整文件分析失敗：{error}"
+                    )
 
     with resume_col:
         if st.button(
@@ -1275,17 +2571,36 @@ if "parsed_document" in st.session_state:
                 resume=False,
             )
 
-    if "document_notion_result" in st.session_state:
-        document_notion_result = st.session_state[
-            "document_notion_result"
-        ]
-
-        st.link_button(
-            "開啟 Notion 詳細學習筆記",
-            document_notion_result["parent_page_url"],
+    if (
+        "document_notion_result"
+        in st.session_state
+    ):
+        document_notion_result = (
+            st.session_state[
+                "document_notion_result"
+            ]
         )
 
-        result_col1, result_col2 = st.columns(2)
+        parent_page_url = str(
+            document_notion_result.get(
+                "parent_page_url",
+                "",
+            )
+            or document_notion_result.get(
+                "notion_parent_url",
+                "",
+            )
+        ).strip()
+
+        if parent_page_url:
+            st.link_button(
+                "開啟 Notion 詳細學習筆記",
+                parent_page_url,
+            )
+
+        result_col1, result_col2 = (
+            st.columns(2)
+        )
 
         result_col1.metric(
             "圖片分析快取",
@@ -1297,17 +2612,23 @@ if "parsed_document" in st.session_state:
             f"{document_notion_result.get('cached_note_count', 0)} 個",
         )
 
-        failed_chapters = document_notion_result.get(
-            "failed_chapters",
-            [],
+        failed_chapters = (
+            _normalize_export_items(
+                document_notion_result.get(
+                    "failed_chapters"
+                )
+            )
         )
 
         if failed_chapters:
-            with st.expander("查看尚未完成章節"):
-                for failed_chapter in failed_chapters:
-                    st.error(
-                        f"{failed_chapter.get('chapter_title', '未知章節')}："
-                        f"{failed_chapter.get('error', '未知錯誤')}"
+            with st.expander(
+                "查看尚未完成章節"
+            ):
+                for failed_chapter in (
+                    failed_chapters
+                ):
+                    _show_failed_export_chapter(
+                        failed_chapter
                     )
 
     st.divider()
@@ -1316,25 +2637,43 @@ if "parsed_document" in st.session_state:
     if st.button("分析第一段內容"):
         first_chunk = chunks[0]
 
-        with st.spinner("AI 正在分析第一段內容..."):
+        with st.spinner(
+            "AI 正在分析第一段內容..."
+        ):
             try:
                 chunk_result = analyze_chunk(
-                    chunk_content=first_chunk["content"],
-                    chunk_id=first_chunk["chunk_id"],
+                    chunk_content=first_chunk[
+                        "content"
+                    ],
+                    chunk_id=first_chunk[
+                        "chunk_id"
+                    ],
                 )
 
-                st.session_state["chunk_result"] = chunk_result
-                st.success("第一段 AI 分析完成。")
+                st.session_state[
+                    "chunk_result"
+                ] = chunk_result
+
+                st.success(
+                    "第一段 AI 分析完成。"
+                )
 
             except Exception as error:
-                st.error(f"AI 分析失敗：{error}")
+                st.error(
+                    f"AI 分析失敗：{error}"
+                )
+
 
 show_chunk_result()
 
 if "parsed_document" in st.session_state:
-    current_file_name = st.session_state.get(
-        "current_file_name",
-        "未命名文件",
+    current_file_name = (
+        st.session_state.get(
+            "current_file_name",
+            "未命名文件",
+        )
     )
 
-    show_final_result(current_file_name)
+    show_final_result(
+        current_file_name
+    )
