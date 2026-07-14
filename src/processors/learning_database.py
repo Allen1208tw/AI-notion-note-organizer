@@ -455,140 +455,533 @@ def update_document_export_result(
         session.commit()
 
 
+
+def _normalize_learning_text(value) -> str:
+    """
+    正規化 Quiz / Flash Card 比對文字。
+
+    用途：
+    - 忽略大小寫
+    - 忽略多餘空白與換行
+    - 忽略常見全形／半形標點差異
+    """
+
+    text = str(value or "").strip().lower()
+
+    replacements = {
+        "（": "(",
+        "）": ")",
+        "，": ",",
+        "。": ".",
+        "：": ":",
+        "；": ";",
+        "？": "?",
+        "！": "!",
+        "、": ",",
+        "　": " ",
+    }
+
+    for old, new in replacements.items():
+        text = text.replace(old, new)
+
+    text = re.sub(r"\s+", "", text)
+    text = re.sub(
+        r"[`'\"“”‘’]",
+        "",
+        text,
+    )
+
+    return text
+
+
+def _quiz_identity(
+    question,
+    answer,
+) -> str:
+    """建立 Quiz 去重識別鍵。"""
+
+    normalized_question = (
+        _normalize_learning_text(
+            question
+        )
+    )
+
+    normalized_answer = (
+        _normalize_learning_text(
+            answer
+        )
+    )
+
+    return (
+        f"{normalized_question}|"
+        f"{normalized_answer}"
+    )
+
+
+def _flashcard_identity(
+    front,
+    back,
+) -> str:
+    """建立 Flash Card 去重識別鍵。"""
+
+    normalized_front = (
+        _normalize_learning_text(
+            front
+        )
+    )
+
+    normalized_back = (
+        _normalize_learning_text(
+            back
+        )
+    )
+
+    return (
+        f"{normalized_front}|"
+        f"{normalized_back}"
+    )
+
+
+def _prepare_unique_quiz_items(
+    chapter_note,
+) -> tuple[list[dict], int]:
+    """
+    整理並去除同一批章節筆記內的重複 Quiz。
+
+    回傳：
+    - 唯一 Quiz 資料
+    - 批次內被略過的重複／空白數量
+    """
+
+    unique_items: list[dict] = []
+    seen_keys: set[str] = set()
+    skipped_count = 0
+
+    for quiz_item in getattr(
+        chapter_note,
+        "quiz",
+        [],
+    ):
+        question = str(
+            getattr(
+                quiz_item,
+                "question",
+                "",
+            )
+            or ""
+        ).strip()
+
+        answer = str(
+            getattr(
+                quiz_item,
+                "answer",
+                "",
+            )
+            or ""
+        ).strip()
+
+        explanation = str(
+            getattr(
+                quiz_item,
+                "explanation",
+                "",
+            )
+            or ""
+        ).strip()
+
+        if not question or not answer:
+            skipped_count += 1
+            continue
+
+        identity = _quiz_identity(
+            question,
+            answer,
+        )
+
+        if (
+            not identity.replace("|", "")
+            or identity in seen_keys
+        ):
+            skipped_count += 1
+            continue
+
+        seen_keys.add(
+            identity
+        )
+
+        unique_items.append(
+            {
+                "question": question,
+                "answer": answer,
+                "explanation": explanation,
+                "identity": identity,
+            }
+        )
+
+    return unique_items, skipped_count
+
+
+def _prepare_unique_flashcard_items(
+    chapter_note,
+) -> tuple[list[dict], int]:
+    """
+    整理並去除同一批章節筆記內的重複 Flash Cards。
+
+    回傳：
+    - 唯一卡片資料
+    - 批次內被略過的重複／空白數量
+    """
+
+    unique_items: list[dict] = []
+    seen_keys: set[str] = set()
+    skipped_count = 0
+
+    for flashcard_item in getattr(
+        chapter_note,
+        "flashcards",
+        [],
+    ):
+        front = str(
+            getattr(
+                flashcard_item,
+                "front",
+                "",
+            )
+            or ""
+        ).strip()
+
+        back = str(
+            getattr(
+                flashcard_item,
+                "back",
+                "",
+            )
+            or ""
+        ).strip()
+
+        if not front or not back:
+            skipped_count += 1
+            continue
+
+        identity = _flashcard_identity(
+            front,
+            back,
+        )
+
+        if (
+            not identity.replace("|", "")
+            or identity in seen_keys
+        ):
+            skipped_count += 1
+            continue
+
+        seen_keys.add(
+            identity
+        )
+
+        unique_items.append(
+            {
+                "front": front,
+                "back": back,
+                "identity": identity,
+            }
+        )
+
+    return unique_items, skipped_count
+
+
 def save_chapter_learning_items(
     document_id: int | str,
     source_chapter_id: str,
     chapter_note,
 ) -> dict:
-    """將章節詳細筆記中的 Quiz / Flash Cards 寫入 SQLite。"""
+    """
+    將章節 Quiz / Flash Cards 安全寫入 SQLite。
+
+    防護：
+    - 不刪除既有 QuizAttempt / FlashcardReview
+    - 同一批快取先自行去重
+    - 與資料庫現有資料做正規化比對
+    - 只新增真正缺少的項目
+    - 整章使用單一 transaction，失敗時全部 rollback
+    """
 
     with get_database_session() as session:
-        chapter = _find_chapter_record(
-            session=session,
-            document_id=document_id,
-            source_chapter_id=str(source_chapter_id),
-        )
-
-        if chapter is None:
-            return {
-                "saved": False,
-                "reason": "找不到對應章節",
-                "quiz_count": 0,
-                "flashcard_count": 0,
-            }
-
-        old_quizzes = (
-            session.query(Quiz)
-            .filter(
-                Quiz.document_id == document_id,
-                Quiz.chapter_id == chapter.id,
+        try:
+            chapter = _find_chapter_record(
+                session=session,
+                document_id=document_id,
+                source_chapter_id=str(
+                    source_chapter_id
+                ),
             )
-            .all()
-        )
 
-        old_quiz_ids = [quiz.id for quiz in old_quizzes]
+            if chapter is None:
+                return {
+                    "saved": False,
+                    "reason": "找不到對應章節",
+                    "quiz_count": 0,
+                    "flashcard_count": 0,
+                    "added_quiz_count": 0,
+                    "added_flashcard_count": 0,
+                    "skipped_quiz_count": 0,
+                    "skipped_flashcard_count": 0,
+                }
 
-        if old_quiz_ids:
-            session.query(QuizAttempt).filter(
-                QuizAttempt.quiz_id.in_(old_quiz_ids)
-            ).delete(synchronize_session=False)
-
-        session.query(Quiz).filter(
-            Quiz.document_id == document_id,
-            Quiz.chapter_id == chapter.id,
-        ).delete(synchronize_session=False)
-
-        old_flashcards = (
-            session.query(Flashcard)
-            .filter(
-                Flashcard.document_id == document_id,
-                Flashcard.chapter_id == chapter.id,
+            (
+                prepared_quizzes,
+                batch_skipped_quizzes,
+            ) = _prepare_unique_quiz_items(
+                chapter_note
             )
-            .all()
-        )
 
-        old_flashcard_ids = [
-            flashcard.id for flashcard in old_flashcards
-        ]
+            (
+                prepared_flashcards,
+                batch_skipped_flashcards,
+            ) = _prepare_unique_flashcard_items(
+                chapter_note
+            )
 
-        if old_flashcard_ids:
-            session.query(FlashcardReview).filter(
-                FlashcardReview.flashcard_id.in_(old_flashcard_ids)
-            ).delete(synchronize_session=False)
-
-            session.query(ReviewSchedule).filter(
-                (
-                    ReviewSchedule.item_type == "flashcard"
+            existing_quizzes = (
+                session.query(Quiz)
+                .filter(
+                    Quiz.document_id
+                    == document_id,
+                    Quiz.chapter_id
+                    == chapter.id,
                 )
-                & ReviewSchedule.item_id.in_(old_flashcard_ids)
-            ).delete(synchronize_session=False)
+                .all()
+            )
 
-        session.query(Flashcard).filter(
-            Flashcard.document_id == document_id,
-            Flashcard.chapter_id == chapter.id,
-        ).delete(synchronize_session=False)
-
-        quiz_count = 0
-        flashcard_count = 0
-
-        for quiz_item in getattr(chapter_note, "quiz", []):
-            quiz_data = {
-                "document_id": document_id,
-                "chapter_id": chapter.id,
-                "question": getattr(quiz_item, "question", ""),
-                "correct_answer": getattr(quiz_item, "answer", ""),
-                "answer": getattr(quiz_item, "answer", ""),
-                "explanation": getattr(quiz_item, "explanation", ""),
-                "difficulty": "medium",
-                "created_at": datetime.utcnow(),
-                "updated_at": datetime.utcnow(),
+            existing_quiz_keys = {
+                _quiz_identity(
+                    getattr(
+                        quiz,
+                        "question",
+                        "",
+                    ),
+                    (
+                        getattr(
+                            quiz,
+                            "correct_answer",
+                            None,
+                        )
+                        or getattr(
+                            quiz,
+                            "answer",
+                            "",
+                        )
+                    ),
+                )
+                for quiz in existing_quizzes
             }
 
-            quiz_data = _maybe_add_id(Quiz, quiz_data)
+            existing_flashcards = (
+                session.query(Flashcard)
+                .filter(
+                    Flashcard.document_id
+                    == document_id,
+                    Flashcard.chapter_id
+                    == chapter.id,
+                )
+                .all()
+            )
 
-            quiz = Quiz(
-                **_filter_model_kwargs(
+            existing_flashcard_keys = {
+                _flashcard_identity(
+                    getattr(
+                        flashcard,
+                        "front",
+                        "",
+                    ),
+                    getattr(
+                        flashcard,
+                        "back",
+                        "",
+                    ),
+                )
+                for flashcard in existing_flashcards
+            }
+
+            now = datetime.utcnow()
+
+            added_quiz_count = 0
+            skipped_quiz_count = (
+                batch_skipped_quizzes
+            )
+
+            for item in prepared_quizzes:
+                identity = item["identity"]
+
+                if identity in existing_quiz_keys:
+                    skipped_quiz_count += 1
+                    continue
+
+                quiz_data = {
+                    "document_id": document_id,
+                    "chapter_id": chapter.id,
+                    "question": item[
+                        "question"
+                    ],
+                    "correct_answer": item[
+                        "answer"
+                    ],
+                    "answer": item["answer"],
+                    "explanation": item[
+                        "explanation"
+                    ],
+                    "difficulty": "medium",
+                    "created_at": now,
+                    "updated_at": now,
+                }
+
+                quiz_data = _maybe_add_id(
                     Quiz,
                     quiz_data,
                 )
+
+                session.add(
+                    Quiz(
+                        **_filter_model_kwargs(
+                            Quiz,
+                            quiz_data,
+                        )
+                    )
+                )
+
+                existing_quiz_keys.add(
+                    identity
+                )
+
+                added_quiz_count += 1
+
+            added_flashcard_count = 0
+            skipped_flashcard_count = (
+                batch_skipped_flashcards
             )
 
-            session.add(quiz)
-            quiz_count += 1
+            for item in prepared_flashcards:
+                identity = item["identity"]
 
-        for flashcard_item in getattr(chapter_note, "flashcards", []):
-            flashcard_data = {
-                "document_id": document_id,
-                "chapter_id": chapter.id,
-                "front": getattr(flashcard_item, "front", ""),
-                "back": getattr(flashcard_item, "back", ""),
-                "created_at": datetime.utcnow(),
-                "updated_at": datetime.utcnow(),
-            }
+                if identity in (
+                    existing_flashcard_keys
+                ):
+                    skipped_flashcard_count += 1
+                    continue
 
-            flashcard_data = _maybe_add_id(Flashcard, flashcard_data)
+                flashcard_data = {
+                    "document_id": document_id,
+                    "chapter_id": chapter.id,
+                    "front": item["front"],
+                    "back": item["back"],
+                    "created_at": now,
+                    "updated_at": now,
+                }
 
-            flashcard = Flashcard(
-                **_filter_model_kwargs(
+                flashcard_data = _maybe_add_id(
                     Flashcard,
                     flashcard_data,
                 )
+
+                session.add(
+                    Flashcard(
+                        **_filter_model_kwargs(
+                            Flashcard,
+                            flashcard_data,
+                        )
+                    )
+                )
+
+                existing_flashcard_keys.add(
+                    identity
+                )
+
+                added_flashcard_count += 1
+
+            _safe_setattr(
+                chapter,
+                "note_cache_status",
+                "completed",
             )
 
-            session.add(flashcard)
-            flashcard_count += 1
+            _safe_setattr(
+                chapter,
+                "updated_at",
+                now,
+            )
 
-        _safe_setattr(chapter, "note_cache_status", "completed")
-        _safe_setattr(chapter, "updated_at", datetime.utcnow())
+            session.flush()
+            session.commit()
 
-        session.commit()
+            total_quiz_count = (
+                session.query(
+                    func.count(Quiz.id)
+                )
+                .filter(
+                    Quiz.document_id
+                    == document_id,
+                    Quiz.chapter_id
+                    == chapter.id,
+                )
+                .scalar()
+                or 0
+            )
 
-        return {
-            "saved": True,
-            "reason": "",
-            "quiz_count": quiz_count,
-            "flashcard_count": flashcard_count,
-        }
+            total_flashcard_count = (
+                session.query(
+                    func.count(
+                        Flashcard.id
+                    )
+                )
+                .filter(
+                    Flashcard.document_id
+                    == document_id,
+                    Flashcard.chapter_id
+                    == chapter.id,
+                )
+                .scalar()
+                or 0
+            )
+
+            return {
+                "saved": True,
+                "reason": "",
+                "quiz_count": int(
+                    total_quiz_count
+                ),
+                "flashcard_count": int(
+                    total_flashcard_count
+                ),
+                "added_quiz_count": (
+                    added_quiz_count
+                ),
+                "added_flashcard_count": (
+                    added_flashcard_count
+                ),
+                "skipped_quiz_count": (
+                    skipped_quiz_count
+                ),
+                "skipped_flashcard_count": (
+                    skipped_flashcard_count
+                ),
+            }
+
+        except Exception as error:
+            session.rollback()
+
+            return {
+                "saved": False,
+                "reason": (
+                    "SQLite 章節學習資料寫入失敗："
+                    f"{error}"
+                ),
+                "quiz_count": 0,
+                "flashcard_count": 0,
+                "added_quiz_count": 0,
+                "added_flashcard_count": 0,
+                "skipped_quiz_count": 0,
+                "skipped_flashcard_count": 0,
+            }
 
 
 def count_chapter_learning_items(

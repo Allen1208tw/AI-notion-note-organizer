@@ -63,19 +63,6 @@ def inject_full_text_css() -> None:
             height: auto !important;
         }
 
-        div[data-baseweb="select"] span,
-        div[data-baseweb="select"] div,
-        div[data-baseweb="popover"] span,
-        div[data-baseweb="popover"] div,
-        li[role="option"] {
-            white-space: normal !important;
-            overflow: visible !important;
-            text-overflow: clip !important;
-            overflow-wrap: anywhere !important;
-            word-break: break-word !important;
-            height: auto !important;
-        }
-
         button,
         button div,
         button p,
@@ -297,14 +284,32 @@ def show_quiz_practice(document_id: str, chapter_id: str) -> None:
             placeholder="先用自己的話回答，再查看標準答案並進行自評。",
         )
 
+        is_revealed = st.session_state.get(
+            reveal_key,
+            False,
+        )
+
+        reveal_button_label = (
+            "收合標準答案"
+            if is_revealed
+            else "查看標準答案"
+        )
+
         if st.button(
-            "查看標準答案",
+            reveal_button_label,
             key=f"reveal_button_{quiz_id}",
             use_container_width=False,
         ):
-            st.session_state[reveal_key] = True
+            st.session_state[
+                reveal_key
+            ] = not is_revealed
 
-        if st.session_state.get(reveal_key, False):
+            st.rerun()
+
+        if st.session_state.get(
+            reveal_key,
+            False,
+        ):
             st.success(
                 "標準答案：\n\n"
                 f"{safe_text(quiz.get('correct_answer'))}"
@@ -610,12 +615,28 @@ if not documents:
     )
     st.stop()
 
-document_options = build_document_options(documents)
-selected_document_label = st.selectbox(
+document_labels = [
+    safe_text(
+        document.get("file_name"),
+        "未命名文件",
+    )
+    for document in documents
+]
+
+selected_document_index = st.selectbox(
     "選擇文件",
-    options=list(document_options.keys()),
+    options=list(range(len(documents))),
+    format_func=lambda index: document_labels[index],
+    key="quiz_document_selector",
 )
-selected_document_id = document_options[selected_document_label]
+
+selected_document = documents[
+    selected_document_index
+]
+
+selected_document_id = safe_text(
+    selected_document.get("id")
+)
 
 try:
     chapters = get_chapters_by_document(selected_document_id)
@@ -627,21 +648,30 @@ if not chapters:
     st.info("這份文件目前沒有包含 Quiz 的章節。")
     st.stop()
 
-chapter_options = build_chapter_options(chapters)
-selected_chapter_label = st.selectbox(
-    "選擇章節",
-    options=list(chapter_options.keys()),
-)
-selected_chapter_id = chapter_options[selected_chapter_label]
-
-selected_document = next(
+chapter_labels = [
     (
-        item
-        for item in documents
-        if safe_text(item.get("id")) == selected_document_id
-    ),
-    {},
+        f"Module {chapter.get('chapter_order', '?')}｜"
+        f"{safe_text(chapter.get('title'), '未命名章節')}｜"
+        f"{chapter.get('quiz_count', 0)} 題 Quiz"
+    )
+    for chapter in chapters
+]
+
+selected_chapter_index = st.selectbox(
+    "選擇章節",
+    options=list(range(len(chapters))),
+    format_func=lambda index: chapter_labels[index],
+    key=f"quiz_chapter_selector_{selected_document_id}",
 )
+
+selected_chapter = chapters[
+    selected_chapter_index
+]
+
+selected_chapter_id = safe_text(
+    selected_chapter.get("id")
+)
+
 
 header_col1, header_col2, header_col3, header_col4 = st.columns(4)
 header_col1.metric("文件 Quiz", selected_document.get("quiz_count", 0))

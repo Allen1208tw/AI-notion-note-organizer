@@ -16,6 +16,7 @@ from src.processors.text_chunker import chunk_text
 from src.services.analysis_service import analyze_chunk, analyze_document
 from src.services.chapter_notion_service import (
     create_document_learning_notebook,
+    sync_document_learning_cache_to_sqlite,
 )
 from src.services.chapter_service import analyze_chapter
 from src.services.export_estimate_service import (
@@ -2508,8 +2509,8 @@ if "parsed_document" in st.session_state:
         parsed_document=parsed_document,
     )
 
-    analysis_col, resume_col, restart_col = (
-        st.columns(3)
+    analysis_col, sync_col, resume_col, restart_col = (
+        st.columns(4)
     )
 
     with analysis_col:
@@ -2545,6 +2546,104 @@ if "parsed_document" in st.session_state:
                 except Exception as error:
                     st.error(
                         f"完整文件分析失敗：{error}"
+                    )
+
+    with sync_col:
+        if st.button(
+            "從快取同步練習題",
+            use_container_width=True,
+        ):
+            current_document_id = (
+                st.session_state.get(
+                    "current_document_id"
+                )
+            )
+
+            with st.spinner(
+                "正在從詳細筆記快取同步 Quiz 與 Flash Cards..."
+            ):
+                try:
+                    sync_result = (
+                        sync_document_learning_cache_to_sqlite(
+                            document_name=current_file_name,
+                            chapters=chapters,
+                            document_id=current_document_id,
+                        )
+                    )
+
+                    synced_chapters = int(
+                        sync_result.get(
+                            "synced_chapter_count",
+                            0,
+                        )
+                        or 0
+                    )
+
+                    skipped_chapters = int(
+                        sync_result.get(
+                            "skipped_chapter_count",
+                            0,
+                        )
+                        or 0
+                    )
+
+                    failed_chapters = int(
+                        sync_result.get(
+                            "failed_chapter_count",
+                            0,
+                        )
+                        or 0
+                    )
+
+                    synced_quizzes = int(
+                        sync_result.get(
+                            "synced_quiz_count",
+                            0,
+                        )
+                        or 0
+                    )
+
+                    synced_flashcards = int(
+                        sync_result.get(
+                            "synced_flashcard_count",
+                            0,
+                        )
+                        or 0
+                    )
+
+                    if synced_chapters > 0:
+                        st.success(
+                            "SQLite 同步完成："
+                            f"共回填 {synced_chapters} 個 Module、"
+                            f"{synced_quizzes} 題 Quiz、"
+                            f"{synced_flashcards} 張 Flash Cards。"
+                        )
+
+                    elif failed_chapters == 0:
+                        st.info(
+                            "沒有需要回填的資料。"
+                            f"已有 {skipped_chapters} 個 Module "
+                            "存在 SQLite 學習資料。"
+                        )
+
+                    if failed_chapters > 0:
+                        st.warning(
+                            f"有 {failed_chapters} 個 Module "
+                            "同步失敗。"
+                        )
+
+                        for error_message in (
+                            sync_result.get("errors", [])
+                            or []
+                        ):
+                            st.error(str(error_message))
+
+                    st.rerun()
+
+                except Exception as error:
+                    st.error(
+                        "從快取同步 SQLite 失敗："
+                        f"{error}"
                     )
 
     with resume_col:

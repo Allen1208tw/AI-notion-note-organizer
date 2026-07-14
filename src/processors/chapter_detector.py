@@ -62,6 +62,42 @@ def clean_heading_title(title: str) -> str:
         cleaned,
     )
 
+    cleaned = re.sub(
+        r"\s*、\s*",
+        "、",
+        cleaned,
+    )
+
+    cleaned = re.sub(
+        r"\s*，\s*",
+        "，",
+        cleaned,
+    )
+
+    cleaned = re.sub(
+        r"(?<![A-Za-z])"
+        r"C\s+S\s+S"
+        r"(?![A-Za-z])",
+        "CSS",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+
+    cleaned = re.sub(
+        r"(?<![A-Za-z])"
+        r"H\s+T\s+M\s+L"
+        r"(?![A-Za-z])",
+        "HTML",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+
+    cleaned = re.sub(
+        r"\s+",
+        " ",
+        cleaned,
+    )
+
     return cleaned.strip()
 
 
@@ -110,19 +146,258 @@ def line_start_positions(text: str) -> list[tuple[str, int, int]]:
     return lines
 
 
-def extract_module_style_headings(text: str) -> list[HeadingMatch]:
+
+def is_generic_chapter_title(
+    title: str,
+    chapter_number: str = "",
+) -> bool:
+    """判斷標題是否只有 Module / Chapter 編號，沒有實際主題。"""
+
+    normalized = normalize_heading_text(title)
+
+    if not normalized:
+        return True
+
+    patterns = [
+        r"^(module|chapter|unit)\s*[\d一二三四五六七八九十]+[：:.\-、]*$",
+        r"^第\s*[\d一二三四五六七八九十]+\s*[章節][：:.\-、]*$",
+        r"^[\d一二三四五六七八九十]+[：:.\-、]*$",
+    ]
+
+    for pattern in patterns:
+        if re.fullmatch(
+            pattern,
+            normalized,
+            flags=re.IGNORECASE,
+        ):
+            return True
+
+    cleaned = clean_heading_title(normalized)
+
+    if not cleaned:
+        return True
+
+    if (
+        chapter_number
+        and normalize_for_compare(cleaned)
+        == normalize_for_compare(chapter_number)
+    ):
+        return True
+
+    return False
+
+
+def looks_like_title_continuation(
+    text: str,
+) -> bool:
+    """判斷文字是否適合併入跨行章節標題。"""
+
+    normalized = normalize_heading_text(
+        text
+    )
+
+    if not normalized:
+        return False
+
+    if is_noise_line(normalized):
+        return False
+
+    if len(normalized) > 80:
+        return False
+
+    if re.match(
+        r"^\s*(module|chapter|unit)\s*"
+        r"[\d一二三四五六七八九十]+",
+        normalized,
+        flags=re.IGNORECASE,
+    ):
+        return False
+
+    if re.match(
+        r"^\s*第\s*[\d一二三四五六七八九十]+\s*[章節]",
+        normalized,
+    ):
+        return False
+
+    if re.match(
+        r"^\s*[•●▪➢✓\-]\s*",
+        normalized,
+    ):
+        return False
+
+    sentence_endings = (
+        "。",
+        "！",
+        "？",
+        ".",
+        "!",
+        "?",
+    )
+
+    if normalized.endswith(
+        sentence_endings
+    ):
+        return False
+
+    if any(
+        keyword in normalized
+        for keyword in (
+            "程式碼範例",
+            "執行結果",
+            "圖:",
+            "圖：",
+            "說明",
+        )
+    ):
+        return False
+
+    return True
+
+
+def find_next_meaningful_title_lines(
+    line_positions: list[tuple[str, int, int]],
+    current_index: int,
+    max_lookahead: int = 5,
+    max_title_lines: int = 3,
+) -> tuple[str, int]:
     """
-    偵測 Module / Chapter / Unit 類型章節。
+    往後收集一到多行章節標題。
 
     適用：
-    Module 1 xxx
-    Chapter 1 xxx
-    Unit 1 xxx
-    M o d u l e 1 xxx
+    Module 4.
+    字串、列表、元組、
+    字典、集合
     """
 
-    matches: list[HeadingMatch] = []
-    line_positions = line_start_positions(text)
+    collected_lines: list[str] = []
+    resolved_end_index = (
+        line_positions[current_index][2]
+    )
+
+    upper_bound = min(
+        len(line_positions),
+        current_index + max_lookahead + 1,
+    )
+
+    for next_index in range(
+        current_index + 1,
+        upper_bound,
+    ):
+        line, _, end_index = line_positions[
+            next_index
+        ]
+
+        normalized = normalize_heading_text(
+            line
+        )
+
+        if not normalized:
+            if collected_lines:
+                break
+
+            continue
+
+        if is_noise_line(normalized):
+            if collected_lines:
+                break
+
+            continue
+
+        if not looks_like_title_continuation(
+            normalized
+        ):
+            break
+
+        cleaned = clean_heading_title(
+            normalized
+        )
+
+        if not cleaned:
+            continue
+
+        collected_lines.append(
+            cleaned
+        )
+
+        resolved_end_index = end_index
+
+        if len(collected_lines) >= max_title_lines:
+            break
+
+        if not cleaned.endswith(
+            (
+                "、",
+                "，",
+                ",",
+                "/",
+                "／",
+                "&",
+                "與",
+                "及",
+            )
+        ):
+            # 若這一行已像完整標題，仍允許下一行為短標題補充；
+            # 但只在下一行非常短且同樣像標題時合併。
+            if next_index + 1 < upper_bound:
+                next_line = normalize_heading_text(
+                    line_positions[
+                        next_index + 1
+                    ][0]
+                )
+
+                if not (
+                    1 <= len(next_line) <= 20
+                    and looks_like_title_continuation(
+                        next_line
+                    )
+                ):
+                    break
+            else:
+                break
+
+    if not collected_lines:
+        return "", line_positions[
+            current_index
+        ][2]
+
+    combined_title = " ".join(
+        collected_lines
+    )
+
+    combined_title = re.sub(
+        r"\s*([、，,／/&])\s*",
+        r"\1",
+        combined_title,
+    )
+
+    return (
+        combined_title.strip(),
+        resolved_end_index,
+    )
+
+
+def extract_module_toc_map(
+    text: str,
+) -> dict[str, str]:
+    """
+    從文件前段目錄建立 Module 編號與完整標題映射。
+
+    支援：
+    Module 1. Python 技術及開發環境介紹
+
+    也支援：
+    Module 1.
+    Python 技術及開發環境介紹
+    """
+
+    line_positions = line_start_positions(
+        text
+    )
+
+    max_scan_lines = min(
+        len(line_positions),
+        350,
+    )
 
     heading_pattern = re.compile(
         r"^\s*"
@@ -132,34 +407,283 @@ def extract_module_style_headings(text: str) -> list[HeadingMatch]:
         r"unit|u\s*n\s*i\s*t"
         r")"
         r"\s*"
-        r"(?P<number>[\d一二三四五六七八九十]+)"
+        r"(?P<number>(?:\d\s*){1,3}|[一二三四五六七八九十]+)"
         r"[\s：:.\-、]*"
-        r"(?P<title>.+)?"
+        r"(?P<title>.*)"
         r"\s*$",
         flags=re.IGNORECASE,
     )
 
-    for line, start_index, end_index in line_positions:
-        normalized_line = normalize_heading_text(line)
+    toc_map: dict[str, str] = {}
 
-        match = heading_pattern.match(normalized_line)
+    for index in range(max_scan_lines):
+        line, _, _ = line_positions[index]
+
+        normalized = normalize_heading_text(
+            line
+        )
+
+        match = heading_pattern.match(
+            normalized
+        )
 
         if not match:
             continue
 
-        title = match.group("title") or normalized_line
-        title = clean_heading_title(title)
+        chapter_number = re.sub(
+            r"\s+",
+            "",
+            match.group(
+                "number"
+            )
+            or "",
+        )
+
+        raw_title = (
+            match.group("title")
+            or ""
+        ).strip()
+
+        title = clean_heading_title(
+            raw_title
+        )
+
+        if is_generic_chapter_title(
+            title,
+            chapter_number,
+        ):
+            title, _ = (
+                find_next_meaningful_title_lines(
+                    line_positions,
+                    index,
+                )
+            )
+
+        if (
+            title
+            and not is_generic_chapter_title(
+                title,
+                chapter_number,
+            )
+            and len(title) <= 120
+        ):
+            toc_map.setdefault(
+                chapter_number,
+                title,
+            )
+
+    return toc_map
+
+
+def make_descriptive_fallback_title(
+    chapter_number: str,
+    chapter_content_preview: str,
+) -> str:
+    """
+    無法從標題或目錄取得名稱時，
+    從章節前幾行推導可理解的 fallback 標題。
+    """
+
+    for line in chapter_content_preview.splitlines()[:12]:
+        normalized = normalize_heading_text(
+            line
+        )
+
+        if is_noise_line(normalized):
+            continue
+
+        if is_generic_chapter_title(
+            normalized,
+            chapter_number,
+        ):
+            continue
+
+        cleaned = clean_heading_title(
+            normalized
+        )
+
+        if (
+            cleaned
+            and 2 <= len(cleaned) <= 80
+        ):
+            return cleaned
+
+    return f"Module {chapter_number}"
+
+
+def extract_module_style_headings(text: str) -> list[HeadingMatch]:
+    """
+    偵測 Module / Chapter / Unit 類型章節。
+
+    支援：
+    Module 1 Python 技術及開發環境介紹
+    Module 1.
+    Python 技術及開發環境介紹
+    Chapter 1 xxx
+    Unit 1 xxx
+    M o d u l e 1 xxx
+
+    標題取得優先順序：
+    1. 同一行完整標題
+    2. 文件目錄中的編號標題映射
+    3. 下一個有意義的文字行
+    4. 內容預覽推導
+    5. 最後才回退為 Module N
+    """
+
+    matches: list[HeadingMatch] = []
+    line_positions = line_start_positions(text)
+    toc_map = extract_module_toc_map(text)
+
+    heading_pattern = re.compile(
+        r"^\s*"
+        r"(?P<prefix>"
+        r"module|m\s*o\s*d\s*u\s*l\s*e|"
+        r"chapter|c\s*h\s*a\s*p\s*t\s*e\s*r|"
+        r"unit|u\s*n\s*i\s*t"
+        r")"
+        r"\s*"
+        r"(?P<number>(?:\d\s*){1,3}|[一二三四五六七八九十]+)"
+        r"[\s：:.\-、]*"
+        r"(?P<title>.*)"
+        r"\s*$",
+        flags=re.IGNORECASE,
+    )
+
+    for index, (
+        line,
+        start_index,
+        end_index,
+    ) in enumerate(line_positions):
+        normalized_line = normalize_heading_text(
+            line
+        )
+
+        match = heading_pattern.match(
+            normalized_line
+        )
+
+        if not match:
+            continue
+
+        chapter_number = re.sub(
+            r"\s+",
+            "",
+            match.group(
+                "number"
+            )
+            or "",
+        )
+
+        raw_title = (
+            match.group("title")
+            or ""
+        ).strip()
+
+        title = clean_heading_title(
+            raw_title
+        )
+
+        resolved_end_index = end_index
+
+        should_extend_inline_title = bool(
+            title
+            and title.endswith(
+                (
+                    "、",
+                    "，",
+                    ",",
+                    "/",
+                    "／",
+                    "&",
+                    "與",
+                    "及",
+                )
+            )
+        )
+
+        if should_extend_inline_title:
+            (
+                continuation_title,
+                continuation_end_index,
+            ) = find_next_meaningful_title_lines(
+                line_positions,
+                index,
+                max_lookahead=4,
+                max_title_lines=2,
+            )
+
+            if continuation_title:
+                title = (
+                    f"{title}{continuation_title}"
+                )
+
+                resolved_end_index = (
+                    continuation_end_index
+                )
+
+        if is_generic_chapter_title(
+            title,
+            chapter_number,
+        ):
+            toc_title = toc_map.get(
+                chapter_number,
+                "",
+            )
+
+            if toc_title:
+                title = toc_title
+
+        if is_generic_chapter_title(
+            title,
+            chapter_number,
+        ):
+            (
+                next_line_title,
+                next_line_end_index,
+            ) = find_next_meaningful_title_lines(
+                line_positions,
+                index,
+            )
+
+            if next_line_title:
+                title = next_line_title
+                resolved_end_index = (
+                    next_line_end_index
+                )
+
+        if is_generic_chapter_title(
+            title,
+            chapter_number,
+        ):
+            preview_end = min(
+                len(text),
+                end_index + 600,
+            )
+
+            title = (
+                make_descriptive_fallback_title(
+                    chapter_number=chapter_number,
+                    chapter_content_preview=text[
+                        end_index:preview_end
+                    ],
+                )
+            )
+
+        title = clean_heading_title(
+            title
+        )
 
         if not title:
-            title = normalized_line
+            title = f"Module {chapter_number}"
 
         matches.append(
             HeadingMatch(
                 title=title,
                 source="module_heading",
                 start_index=start_index,
-                end_index=end_index,
-                chapter_number=match.group("number"),
+                end_index=resolved_end_index,
+                chapter_number=chapter_number,
             )
         )
 
@@ -463,7 +987,21 @@ def collapse_repeated_running_headers(
             == normalize_for_compare(match.title)
         )
 
-        if same_title:
+        same_chapter_number = (
+            str(
+                previous.chapter_number
+                or ""
+            ).strip()
+            == str(
+                match.chapter_number
+                or ""
+            ).strip()
+        )
+
+        if (
+            same_title
+            and same_chapter_number
+        ):
             continue
 
         collapsed.append(match)
@@ -502,17 +1040,384 @@ def filter_close_duplicate_headings(
             == normalize_for_compare(match.title)
         )
 
+        same_chapter_number = (
+            str(
+                previous.chapter_number
+                or ""
+            ).strip()
+            == str(
+                match.chapter_number
+                or ""
+            ).strip()
+        )
+
         too_close = (
             match.start_index - previous.start_index
             < min_distance
         )
 
-        if same_title and too_close:
+        if (
+            same_title
+            and same_chapter_number
+            and too_close
+        ):
             continue
 
         filtered.append(match)
 
     return filtered
+
+
+
+def chapter_number_to_int(
+    value: str,
+) -> int | None:
+    """將阿拉伯或簡單中文章節編號轉成整數。"""
+
+    normalized = str(value or "").strip()
+
+    if not normalized:
+        return None
+
+    if normalized.isdigit():
+        return int(normalized)
+
+    chinese_digit_map = {
+        "零": 0,
+        "一": 1,
+        "二": 2,
+        "三": 3,
+        "四": 4,
+        "五": 5,
+        "六": 6,
+        "七": 7,
+        "八": 8,
+        "九": 9,
+        "十": 10,
+    }
+
+    if normalized in chinese_digit_map:
+        return chinese_digit_map[normalized]
+
+    if normalized.startswith("十"):
+        tail = normalized[1:]
+
+        if not tail:
+            return 10
+
+        tail_value = chinese_digit_map.get(
+            tail
+        )
+
+        if tail_value is not None:
+            return 10 + tail_value
+
+    if "十" in normalized:
+        head, tail = normalized.split(
+            "十",
+            maxsplit=1,
+        )
+
+        head_value = chinese_digit_map.get(
+            head,
+            1,
+        )
+
+        tail_value = chinese_digit_map.get(
+            tail,
+            0,
+        )
+
+        return head_value * 10 + tail_value
+
+    return None
+
+
+def select_primary_module_sequence(
+    headings: list[HeadingMatch],
+) -> list[HeadingMatch]:
+    """
+    從目錄、正文與附錄中選出真正的主章節序列。
+
+    核心原則：
+    1. 優先尋找從 Module 1 開始的連續序列
+    2. 同樣章節數時，選擇涵蓋文字範圍較大的序列
+       - 目錄中的 1～10 通常集中在很短的文字範圍
+       - 正文章節的 1～10 會橫跨整份教材
+    3. 不再單純選擇「局部最長遞增段」
+       避免錯把 3～10 選成主教材並遺失 1、2
+    4. 找不到從 1 開始的序列時，才使用一般遞增序列 fallback
+    """
+
+    if not headings:
+        return []
+
+    sorted_headings = sorted(
+        headings,
+        key=lambda item: item.start_index,
+    )
+
+    numbered_headings: list[
+        tuple[HeadingMatch, int]
+    ] = []
+
+    for heading in sorted_headings:
+        number_value = chapter_number_to_int(
+            heading.chapter_number
+        )
+
+        if number_value is None:
+            continue
+
+        numbered_headings.append(
+            (
+                heading,
+                number_value,
+            )
+        )
+
+    if not numbered_headings:
+        return sorted_headings
+
+    chapter_one_indices = [
+        index
+        for index, (_, number_value)
+        in enumerate(numbered_headings)
+        if number_value == 1
+    ]
+
+    candidates: list[
+        list[HeadingMatch]
+    ] = []
+
+    for start_index in chapter_one_indices:
+        first_heading, _ = numbered_headings[
+            start_index
+        ]
+
+        candidate = [
+            first_heading
+        ]
+
+        expected_number = 2
+        search_index = start_index + 1
+        current_position = (
+            first_heading.start_index
+        )
+
+        while search_index < len(
+            numbered_headings
+        ):
+            found_heading = None
+            found_index = None
+
+            for candidate_index in range(
+                search_index,
+                len(numbered_headings),
+            ):
+                (
+                    possible_heading,
+                    possible_number,
+                ) = numbered_headings[
+                    candidate_index
+                ]
+
+                if (
+                    possible_heading.start_index
+                    <= current_position
+                ):
+                    continue
+
+                if possible_number == 1:
+                    break
+
+                if (
+                    possible_number
+                    == expected_number
+                ):
+                    found_heading = (
+                        possible_heading
+                    )
+
+                    found_index = (
+                        candidate_index
+                    )
+
+                    break
+
+                if possible_number > expected_number:
+                    break
+
+            if (
+                found_heading is None
+                or found_index is None
+            ):
+                break
+
+            candidate.append(
+                found_heading
+            )
+
+            current_position = (
+                found_heading.start_index
+            )
+
+            search_index = found_index + 1
+            expected_number += 1
+
+        candidates.append(
+            candidate
+        )
+
+    if candidates:
+        def candidate_score(
+            candidate: list[HeadingMatch],
+        ) -> tuple[int, int, int]:
+            chapter_count = len(
+                candidate
+            )
+
+            text_span = (
+                candidate[-1].start_index
+                - candidate[0].start_index
+                if chapter_count >= 2
+                else 0
+            )
+
+            later_start_bonus = (
+                candidate[0].start_index
+            )
+
+            return (
+                chapter_count,
+                text_span,
+                later_start_bonus,
+            )
+
+        best_candidate = max(
+            candidates,
+            key=candidate_score,
+        )
+
+        if len(best_candidate) >= 2:
+            return best_candidate
+
+    runs: list[
+        list[HeadingMatch]
+    ] = []
+
+    current_run: list[
+        HeadingMatch
+    ] = []
+
+    previous_number: int | None = None
+    seen_numbers: set[int] = set()
+
+    for heading, number_value in (
+        numbered_headings
+    ):
+        should_split = False
+
+        if previous_number is not None:
+            if number_value <= previous_number:
+                should_split = True
+
+            if number_value in seen_numbers:
+                should_split = True
+
+        if should_split:
+            if current_run:
+                runs.append(
+                    current_run
+                )
+
+            current_run = []
+            seen_numbers = set()
+
+        current_run.append(
+            heading
+        )
+
+        seen_numbers.add(
+            number_value
+        )
+
+        previous_number = (
+            number_value
+        )
+
+    if current_run:
+        runs.append(
+            current_run
+        )
+
+    if not runs:
+        return sorted_headings
+
+    return max(
+        runs,
+        key=lambda run: (
+            len(run),
+            (
+                run[-1].start_index
+                - run[0].start_index
+                if len(run) >= 2
+                else 0
+            ),
+        ),
+    )
+
+
+def ensure_unique_chapter_source_ids(
+    chapters: list[dict],
+) -> list[dict]:
+    """
+    確保同一份文件內 source chapter id 唯一。
+
+    這是寫入 SQLite 前的最後一道防護。
+    正常情況下主章節序列篩選後不會觸發。
+    """
+
+    used_ids: set[str] = set()
+    normalized_chapters: list[dict] = []
+
+    for index, chapter in enumerate(
+        chapters,
+        start=1,
+    ):
+        item = dict(chapter)
+
+        source_id = str(
+            item.get("chapter_id")
+            or index
+        ).strip()
+
+        if (
+            not source_id
+            or source_id in used_ids
+        ):
+            source_id = str(index)
+
+            suffix = 2
+
+            while source_id in used_ids:
+                source_id = (
+                    f"{index}-{suffix}"
+                )
+
+                suffix += 1
+
+        used_ids.add(
+            source_id
+        )
+
+        item["chapter_id"] = source_id
+
+        normalized_chapters.append(
+            item
+        )
+
+    return normalized_chapters
 
 
 def build_chapters_from_headings(
@@ -547,9 +1452,30 @@ def build_chapters_from_headings(
         if not content:
             continue
 
+        resolved_chapter_id = (
+            str(heading.chapter_number).strip()
+            if str(heading.chapter_number).strip()
+            else str(index)
+        )
+
+        resolved_title = clean_heading_title(
+            heading.title
+        )
+
+        if is_generic_chapter_title(
+            resolved_title,
+            resolved_chapter_id,
+        ):
+            resolved_title = (
+                make_descriptive_fallback_title(
+                    chapter_number=resolved_chapter_id,
+                    chapter_content_preview=content,
+                )
+            )
+
         chapter = {
-            "chapter_id": str(index),
-            "title": heading.title,
+            "chapter_id": resolved_chapter_id,
+            "title": resolved_title,
             "source": heading.source,
             "content": content,
             "start_index": content_start,
@@ -713,7 +1639,11 @@ def detect_chapters(text: str) -> list[dict]:
     module_headings = extract_module_style_headings(text)
 
     if len(module_headings) >= 2:
-        module_headings = remove_toc_duplicate_headings(
+        module_headings = deduplicate_heading_matches(
+            module_headings
+        )
+
+        module_headings = select_primary_module_sequence(
             module_headings
         )
 
@@ -726,9 +1656,13 @@ def detect_chapters(text: str) -> list[dict]:
         )
 
         if len(module_headings) >= 2:
-            return build_chapters_from_headings(
+            chapters = build_chapters_from_headings(
                 text=text,
                 headings=module_headings,
+            )
+
+            return ensure_unique_chapter_source_ids(
+                chapters
             )
 
     toc_headings = extract_toc_based_headings(text)
@@ -747,9 +1681,13 @@ def detect_chapters(text: str) -> list[dict]:
         )
 
         if len(toc_headings) >= 2:
-            return build_chapters_from_headings(
+            chapters = build_chapters_from_headings(
                 text=text,
                 headings=toc_headings,
+            )
+
+            return ensure_unique_chapter_source_ids(
+                chapters
             )
 
     numbered_headings = extract_numbered_chapter_headings(text)
@@ -768,9 +1706,13 @@ def detect_chapters(text: str) -> list[dict]:
         )
 
         if len(numbered_headings) >= 2:
-            return build_chapters_from_headings(
+            chapters = build_chapters_from_headings(
                 text=text,
                 headings=numbered_headings,
+            )
+
+            return ensure_unique_chapter_source_ids(
+                chapters
             )
 
     return detect_fallback_single_chapter(text)

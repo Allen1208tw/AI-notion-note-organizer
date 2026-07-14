@@ -1,8 +1,15 @@
+import base64
 import inspect
+import mimetypes
+import re
+
+import requests
 from datetime import datetime
 from typing import Callable, Optional
 
 from notion_client import Client
+from sqlalchemy import select
+
 
 from src.config.settings import NOTION_API_KEY, NOTION_PARENT_PAGE_ID
 from src.models.chapter_models import (
@@ -29,10 +36,401 @@ from src.services.export_state_service import (
     set_parent_page,
 )
 from src.services.pdf_visual_service import analyze_chapter_visuals
+from src.database.database import get_database_session
+from src.database.models import Document
+from src.services.learning_database_service import (
+    count_chapter_learning_items,
+    save_chapter_learning_items,
+)
 
 
 MAX_RICH_TEXT_LENGTH = 1800
 MAX_BLOCKS_PER_REQUEST = 80
+
+
+NOTION_API_VERSION = "2026-03-11"
+MAX_NOTION_IMAGE_BYTES = 20 * 1024 * 1024
+
+
+def _toggle(
+    title: str,
+    children: list[dict],
+) -> dict:
+    """建立 Notion 原生摺疊區塊。"""
+
+    safe_children = list(children or [])
+
+    if not safe_children:
+        safe_children = _paragraph(
+            "目前沒有內容。"
+        )
+
+    return {
+        "object": "block",
+        "type": "toggle",
+        "toggle": {
+            "rich_text": _rich_text(
+                title
+            ),
+            "children": safe_children,
+        },
+    }
+
+
+def _decode_image_data_url(
+    data_url: str,
+) -> tuple[bytes, str, str]:
+    """
+    解析 data URL。
+
+    回傳：
+    - 圖片 bytes
+    - MIME type
+    - 建議副檔名
+    """
+
+    if not isinstance(
+        data_url,
+        str,
+    ):
+        raise ValueError(
+            "圖片資料不是字串。"
+        )
+
+    match = re.match(
+        r"^data:"
+        r"(?P<mime>image/[a-zA-Z0-9.+-]+)"
+        r";base64,"
+        r"(?P<data>.+)$",
+        data_url,
+        flags=re.DOTALL,
+    )
+
+    if not match:
+        raise ValueError(
+            "圖片不是有效的 Base64 data URL。"
+        )
+
+    mime_type = match.group(
+        "mime"
+    ).lower()
+
+    image_bytes = base64.b64decode(
+        match.group("data"),
+        validate=False,
+    )
+
+    if not image_bytes:
+        raise ValueError(
+            "圖片內容是空的。"
+        )
+
+    if len(image_bytes) > MAX_NOTION_IMAGE_BYTES:
+        raise ValueError(
+            "圖片超過 Notion 單檔上傳限制。"
+        )
+
+    extension = (
+        mimetypes.guess_extension(
+            mime_type
+        )
+        or ".png"
+    )
+
+    if extension == ".jpe":
+        extension = ".jpg"
+
+    return (
+        image_bytes,
+        mime_type,
+        extension,
+    )
+
+
+def _create_notion_file_upload(
+    filename: str,
+    content_type: str,
+) -> dict:
+    """建立 Notion 單檔上傳工作。"""
+
+    if not NOTION_API_KEY:
+        raise ValueError(
+            "尚未設定 NOTION_API_KEY。"
+        )
+
+    response = requests.post(
+        "https://api.notion.com/v1/file_uploads",
+        headers={
+            "Authorization": (
+                f"Bearer {NOTION_API_KEY}"
+            ),
+            "Notion-Version": (
+                NOTION_API_VERSION
+            ),
+            "Content-Type": (
+                "application/json"
+            ),
+        },
+        json={
+            "mode": "single_part",
+            "filename": filename,
+            "content_type": content_type,
+        },
+        timeout=60,
+    )
+
+    response.raise_for_status()
+
+    result = response.json()
+
+    if not result.get("id"):
+        raise ValueError(
+            "Notion 沒有回傳 file_upload ID。"
+        )
+
+    return result
+
+
+def _send_notion_file_upload(
+    upload_info: dict,
+    filename: str,
+    content_type: str,
+    file_bytes: bytes,
+) -> str:
+    """將圖片 bytes 傳送至 Notion。"""
+
+    file_upload_id = str(
+        upload_info.get("id")
+        or ""
+    ).strip()
+
+    upload_url = str(
+        upload_info.get("upload_url")
+        or (
+            "https://api.notion.com/v1/"
+            f"file_uploads/{file_upload_id}/send"
+        )
+    ).strip()
+
+    if not file_upload_id:
+        raise ValueError(
+            "缺少 Notion file_upload ID。"
+        )
+
+    response = requests.post(
+        upload_url,
+        headers={
+            "Authorization": (
+                f"Bearer {NOTION_API_KEY}"
+            ),
+            "Notion-Version": (
+                NOTION_API_VERSION
+            ),
+        },
+        files={
+            "file": (
+                filename,
+                file_bytes,
+                content_type,
+            )
+        },
+        timeout=120,
+    )
+
+    response.raise_for_status()
+
+    return file_upload_id
+
+
+def _upload_data_url_to_notion(
+    data_url: str,
+    filename_stem: str,
+) -> str:
+    """上傳 Base64 圖片並回傳 file_upload ID。"""
+
+    (
+        image_bytes,
+        content_type,
+        extension,
+    ) = _decode_image_data_url(
+        data_url
+    )
+
+    safe_stem = re.sub(
+        r"[^a-zA-Z0-9_-]+",
+        "_",
+        filename_stem,
+    ).strip("_")
+
+    if not safe_stem:
+        safe_stem = "chapter_image"
+
+    filename = (
+        f"{safe_stem}{extension}"
+    )
+
+    upload_info = (
+        _create_notion_file_upload(
+            filename=filename,
+            content_type=content_type,
+        )
+    )
+
+    return _send_notion_file_upload(
+        upload_info=upload_info,
+        filename=filename,
+        content_type=content_type,
+        file_bytes=image_bytes,
+    )
+
+
+def _image_file_upload_block(
+    file_upload_id: str,
+    caption: str = "",
+) -> dict:
+    """建立使用 Notion file_upload 的圖片區塊。"""
+
+    image_data = {
+        "type": "file_upload",
+        "file_upload": {
+            "id": file_upload_id,
+        },
+    }
+
+    if caption:
+        image_data["caption"] = (
+            _rich_text(caption)
+        )
+
+    return {
+        "object": "block",
+        "type": "image",
+        "image": image_data,
+    }
+
+
+def _find_visual_image_data_url(
+    item: dict,
+) -> str:
+    """相容不同 visual_context 圖片欄位名稱。"""
+
+    if not isinstance(item, dict):
+        return ""
+
+    for key in (
+        "image_data_url",
+        "data_url",
+        "image_base64",
+        "page_image_data_url",
+    ):
+        value = item.get(key)
+
+        if (
+            isinstance(value, str)
+            and value.strip()
+        ):
+            if value.startswith(
+                "data:image/"
+            ):
+                return value.strip()
+
+            if key == "image_base64":
+                return (
+                    "data:image/png;base64,"
+                    f"{value.strip()}"
+                )
+
+    return ""
+
+
+def _build_visual_image_blocks(
+    visual_context: list[dict],
+    chapter_id: str,
+) -> tuple[list[dict], list[str]]:
+    """
+    將 PDF 視覺內容上傳至 Notion 並建立圖片 blocks。
+
+    回傳：
+    - image blocks
+    - 無法上傳的錯誤訊息
+    """
+
+    blocks: list[dict] = []
+    errors: list[str] = []
+    seen_images: set[str] = set()
+
+    for index, item in enumerate(
+        visual_context or [],
+        start=1,
+    ):
+        if not isinstance(item, dict):
+            continue
+
+        data_url = (
+            _find_visual_image_data_url(
+                item
+            )
+        )
+
+        if not data_url:
+            continue
+
+        image_identity = data_url[
+            :120
+        ] + str(len(data_url))
+
+        if image_identity in seen_images:
+            continue
+
+        seen_images.add(
+            image_identity
+        )
+
+        page_number = (
+            item.get("page_number")
+            or item.get("page")
+            or index
+        )
+
+        title = str(
+            item.get("title")
+            or item.get("description")
+            or f"第 {page_number} 頁圖片"
+        ).strip()
+
+        caption = (
+            f"第 {page_number} 頁｜"
+            f"{title}"
+        )
+
+        try:
+            file_upload_id = (
+                _upload_data_url_to_notion(
+                    data_url=data_url,
+                    filename_stem=(
+                        f"module_{chapter_id}_"
+                        f"page_{page_number}"
+                    ),
+                )
+            )
+
+            blocks.append(
+                _image_file_upload_block(
+                    file_upload_id=(
+                        file_upload_id
+                    ),
+                    caption=caption,
+                )
+            )
+
+        except Exception as error:
+            errors.append(
+                f"第 {page_number} 頁圖片："
+                f"{error}"
+            )
+
+    return blocks, errors
+
 
 
 def _get_function_parameter_names(function) -> list[str]:
@@ -564,8 +962,12 @@ def _bulleted_item(text: str) -> list[dict]:
     return blocks
 
 
-def _callout(text: str, icon: str = "💡") -> dict:
-    """建立 callout block。"""
+def _callout(
+    text: str,
+    icon: str = "💡",
+    color: str = "blue_background",
+) -> dict:
+    """建立帶顏色的 Notion callout block。"""
 
     return {
         "object": "block",
@@ -576,8 +978,28 @@ def _callout(text: str, icon: str = "💡") -> dict:
                 "type": "emoji",
                 "emoji": icon,
             },
+            "color": color,
         },
     }
+
+
+def _quote(text: str) -> list[dict]:
+    """建立 quote blocks。"""
+
+    blocks = []
+
+    for part in _chunk_text(text):
+        blocks.append(
+            {
+                "object": "block",
+                "type": "quote",
+                "quote": {
+                    "rich_text": _rich_text(part),
+                },
+            }
+        )
+
+    return blocks
 
 
 def _code_block(
@@ -712,6 +1134,39 @@ def _create_page(
     )
 
 
+
+def _build_parent_page_blocks(
+    document_name: str,
+    chapter_count: int,
+) -> list[dict]:
+    """建立與參考 Notion 相同風格的父頁內容。"""
+
+    blocks = [
+        _callout(
+            (
+                "📘 文件詳細學習筆記\n"
+                f"原始文件：{document_name}\n"
+                f"偵測主章節數：{chapter_count}\n"
+                "每個主章節已建立為本頁下方的子頁面。"
+            ),
+            icon="📘",
+            color="blue_background",
+        ),
+        _heading_2("📚 章節總覽"),
+    ]
+
+    blocks.extend(
+        _paragraph(
+            "請從本頁下方開啟各個主章節子頁面，"
+            "閱讀完整學習筆記。"
+        )
+    )
+
+    blocks.append(_divider())
+
+    return blocks
+
+
 def _create_parent_page(
     notion: Client,
     document_name: str,
@@ -730,22 +1185,70 @@ def _create_parent_page(
     )
 
 
-def _build_quiz_blocks(quiz_items: list[ChapterQuizItem]) -> list[dict]:
-    """建立 Quiz blocks。"""
+def _build_quiz_blocks(
+    quiz_items: list[ChapterQuizItem],
+) -> list[dict]:
+    """建立可摺疊的 Quiz blocks。"""
 
     blocks = []
 
     if not quiz_items:
-        blocks.extend(_paragraph("本章未產生 Quiz。"))
+        blocks.extend(
+            _paragraph(
+                "本章未產生 Quiz。"
+            )
+        )
         return blocks
 
-    for index, item in enumerate(quiz_items, start=1):
-        blocks.append(_heading_3(f"第 {index} 題"))
-        blocks.extend(_paragraph(f"Q：{item.question}"))
-        blocks.extend(_paragraph(f"A：{item.answer}"))
+    for index, item in enumerate(
+        quiz_items,
+        start=1,
+    ):
+        question = str(
+            item.question or ""
+        ).strip()
 
-        if item.explanation:
-            blocks.extend(_paragraph(f"解析：{item.explanation}"))
+        answer = str(
+            item.answer or ""
+        ).strip()
+
+        explanation = str(
+            item.explanation or ""
+        ).strip()
+
+        children = []
+
+        children.append(
+            _heading_3("標準答案")
+        )
+
+        children.extend(
+            _paragraph(
+                answer
+                or "本題沒有標準答案。"
+            )
+        )
+
+        if explanation:
+            children.append(
+                _heading_3("答案解析")
+            )
+
+            children.extend(
+                _paragraph(
+                    explanation
+                )
+            )
+
+        blocks.append(
+            _toggle(
+                title=(
+                    f"第 {index} 題｜"
+                    f"{question}"
+                ),
+                children=children,
+            )
+        )
 
     return blocks
 
@@ -753,103 +1256,277 @@ def _build_quiz_blocks(quiz_items: list[ChapterQuizItem]) -> list[dict]:
 def _build_flashcard_blocks(
     flashcards: list[ChapterFlashcardItem],
 ) -> list[dict]:
-    """建立 Flash Card blocks。"""
+    """建立可摺疊的 Flash Card blocks。"""
 
     blocks = []
 
     if not flashcards:
-        blocks.extend(_paragraph("本章未產生 Flash Cards。"))
+        blocks.extend(
+            _paragraph(
+                "本章未產生 Flash Cards。"
+            )
+        )
         return blocks
 
-    for index, card in enumerate(flashcards, start=1):
-        blocks.append(_heading_3(f"Flash Card {index}"))
-        blocks.extend(_paragraph(f"正面：{card.front}"))
-        blocks.extend(_paragraph(f"背面：{card.back}"))
+    for index, card in enumerate(
+        flashcards,
+        start=1,
+    ):
+        front = str(
+            card.front or ""
+        ).strip()
+
+        back = str(
+            card.back or ""
+        ).strip()
+
+        children = []
+
+        children.append(
+            _heading_3("背面答案")
+        )
+
+        children.extend(
+            _paragraph(
+                back
+                or "這張卡片沒有背面內容。"
+            )
+        )
+
+        blocks.append(
+            _toggle(
+                title=(
+                    f"Flash Card {index}｜"
+                    f"{front}"
+                ),
+                children=children,
+            )
+        )
 
     return blocks
 
 
 def _build_chapter_note_blocks(
     chapter_note: ChapterLearningNote,
-) -> list[dict]:
-    """將 ChapterLearningNote 轉成 Notion blocks。"""
+    visual_context: list[dict] | None = None,
+    chapter_id: str = "",
+) -> tuple[list[dict], list[str]]:
+    """
+    建立與參考 Notion 相同風格的詳細學習筆記。
 
-    is_valid, reason = is_valid_chapter_note(chapter_note)
+    版型：
+    - 摘要 Callout
+    - 白話講解
+    - 摺疊學習目標
+    - 彩色重點 Callout
+    - 核心重點
+    - 引用式重要術語
+    - 語法規則
+    - 比較表
+    - 摺疊程式碼範例
+    - 警告 Callout
+    - 子章節
+    - PDF 圖片
+    - 練習
+    - Mermaid
+    - 摺疊 Quiz / Flash Cards
+    """
+
+    is_valid, reason = is_valid_chapter_note(
+        chapter_note
+    )
 
     if not is_valid:
-        raise ValueError(f"拒絕建立空白 Notion 子頁：{reason}")
+        raise ValueError(
+            f"拒絕建立空白 Notion 子頁：{reason}"
+        )
 
-    blocks = []
+    blocks: list[dict] = []
 
-    blocks.append(_heading_1(f"📘 {chapter_note.chapter_title}"))
+    summary_text = (
+        chapter_note.chapter_summary
+        or "本章未產生摘要。"
+    )
 
     blocks.append(
         _callout(
-            "本頁由 AI Notion 自動筆記整理器產生，內容包含摘要、白話講解、重點、術語、練習題與複習素材。",
-            icon="📝",
+            (
+                "📘 本章摘要\n"
+                f"{summary_text}"
+            ),
+            icon="📘",
+            color="blue_background",
+        )
+    )
+
+    blocks.append(
+        _heading_2("🧠 白話講解")
+    )
+
+    blocks.extend(
+        _paragraph(
+            chapter_note.plain_explanation
+            or "本章未產生白話講解。"
         )
     )
 
     blocks.append(_divider())
 
-    blocks.append(_heading_2("🎯 學習目標"))
+    objective_children: list[dict] = []
 
-    if chapter_note.learning_objectives:
-        for objective in chapter_note.learning_objectives:
-            blocks.extend(_bulleted_item(objective))
+    for objective in (
+        chapter_note.learning_objectives
+        or []
+    ):
+        objective_children.extend(
+            _bulleted_item(objective)
+        )
+
+    blocks.append(
+        _heading_2("🎯 學習目標")
+    )
+
+    blocks.append(
+        _toggle(
+            title="展開查看本章完成後能做到什麼",
+            children=(
+                objective_children
+                or _paragraph(
+                    "本章未產生明確學習目標。"
+                )
+            ),
+        )
+    )
+
+    blocks.append(
+        _heading_2("🗺️ 章節學習地圖")
+    )
+
+    if chapter_note.mermaid:
+        blocks.append(
+            _code_block(
+                code=chapter_note.mermaid,
+                language="plain text",
+            )
+        )
     else:
-        blocks.extend(_paragraph("本章未產生明確學習目標。"))
-
-    blocks.append(_heading_2("📝 章節摘要"))
-    blocks.extend(_paragraph(chapter_note.chapter_summary))
-
-    blocks.append(_heading_2("🧠 白話講解"))
-    blocks.extend(_paragraph(chapter_note.plain_explanation))
-
-    blocks.append(_heading_2("⭐ 核心重點"))
-
-    if chapter_note.key_points:
-        for point in chapter_note.key_points:
-            blocks.extend(_bulleted_item(point))
-    else:
-        blocks.extend(_paragraph("本章未產生核心重點。"))
-
-    blocks.append(_heading_2("📚 重要術語"))
-
-    if chapter_note.important_terms:
-        for term in chapter_note.important_terms:
-            blocks.extend(_bulleted_item(term))
-    else:
-        blocks.extend(_paragraph("本章未產生重要術語。"))
-
-    blocks.append(_heading_2("📌 語法規則與注意事項"))
-
-    if chapter_note.syntax_rules:
-        for rule in chapter_note.syntax_rules:
-            blocks.extend(_bulleted_item(rule))
-    else:
-        blocks.extend(_paragraph("本章未產生語法規則。"))
+        blocks.extend(
+            _paragraph(
+                "本章未產生 Mermaid 學習地圖。"
+            )
+        )
 
     if chapter_note.callout_notes:
-        blocks.append(_heading_2("✨ 重點標註"))
+        blocks.append(
+            _heading_2("✨ 重點標註")
+        )
 
-        for callout_note in chapter_note.callout_notes:
-            title = callout_note.title or "補充提醒"
-            content = callout_note.content or ""
-            icon = callout_note.icon or "💡"
+        callout_color_map = {
+            "⚠️": "yellow_background",
+            "❗": "red_background",
+            "✅": "green_background",
+            "📌": "purple_background",
+            "💡": "blue_background",
+            "📝": "gray_background",
+        }
+
+        for callout_note in (
+            chapter_note.callout_notes
+        ):
+            title = (
+                callout_note.title
+                or "補充提醒"
+            )
+
+            content = (
+                callout_note.content
+                or ""
+            )
+
+            icon = (
+                callout_note.icon
+                or "💡"
+            )
+
+            color = callout_color_map.get(
+                icon,
+                "blue_background",
+            )
 
             blocks.append(
                 _callout(
-                    f"{title}\n\n{content}",
+                    (
+                        f"{title}\n"
+                        f"{content}"
+                    ),
                     icon=icon,
+                    color=color,
                 )
             )
 
-    if chapter_note.comparison_tables:
-        blocks.append(_heading_2("📊 重點比較表"))
+    blocks.append(
+        _heading_2("⭐ 核心重點")
+    )
 
-        for table in chapter_note.comparison_tables:
-            blocks.append(_heading_3(table.title))
+    if chapter_note.key_points:
+        for point in chapter_note.key_points:
+            blocks.extend(
+                _bulleted_item(point)
+            )
+    else:
+        blocks.extend(
+            _paragraph(
+                "本章未產生核心重點。"
+            )
+        )
+
+    blocks.append(
+        _heading_2("📚 重要術語")
+    )
+
+    if chapter_note.important_terms:
+        for term in (
+            chapter_note.important_terms
+        ):
+            blocks.extend(
+                _quote(str(term))
+            )
+    else:
+        blocks.extend(
+            _paragraph(
+                "本章未產生重要術語。"
+            )
+        )
+
+    blocks.append(
+        _heading_2("📌 語法規則與注意事項")
+    )
+
+    if chapter_note.syntax_rules:
+        for rule in (
+            chapter_note.syntax_rules
+        ):
+            blocks.extend(
+                _bulleted_item(rule)
+            )
+    else:
+        blocks.extend(
+            _paragraph(
+                "本章未產生語法規則。"
+            )
+        )
+
+    if chapter_note.comparison_tables:
+        blocks.append(
+            _heading_2("📊 重點比較表")
+        )
+
+        for table in (
+            chapter_note.comparison_tables
+        ):
+            blocks.append(
+                _heading_3(table.title)
+            )
 
             table_block = _table_block(
                 headers=table.headers,
@@ -860,123 +1537,254 @@ def _build_chapter_note_blocks(
                 blocks.append(table_block)
 
             if table.note:
-                blocks.extend(_paragraph(f"補充：{table.note}"))
+                blocks.extend(
+                    _quote(
+                        f"補充：{table.note}"
+                    )
+                )
 
-    blocks.append(_heading_2("💻 程式碼範例"))
+    blocks.append(
+        _heading_2("💻 程式碼範例")
+    )
 
     if chapter_note.code_examples:
         for index, example in enumerate(
             chapter_note.code_examples,
             start=1,
         ):
-            blocks.append(_heading_3(f"範例 {index}｜{example.title}"))
-            blocks.append(
+            example_children = [
                 _code_block(
                     code=example.code,
-                    language=example.language or "plain text",
+                    language=(
+                        example.language
+                        or "plain text"
+                    ),
+                )
+            ]
+
+            example_children.extend(
+                _paragraph(
+                    example.explanation
+                    or "本範例沒有補充說明。"
                 )
             )
-            blocks.extend(_paragraph(example.explanation))
-    else:
-        blocks.extend(_paragraph("本章未產生程式碼範例。"))
 
-    blocks.append(_heading_2("⚠️ 常見錯誤與混淆"))
+            blocks.append(
+                _toggle(
+                    title=(
+                        f"範例 {index}｜"
+                        f"{example.title}"
+                    ),
+                    children=example_children,
+                )
+            )
+    else:
+        blocks.extend(
+            _paragraph(
+                "本章未產生程式碼範例。"
+            )
+        )
+
+    blocks.append(
+        _heading_2("⚠️ 常見錯誤與混淆")
+    )
 
     if chapter_note.common_mistakes:
-        for index, mistake in enumerate(
-            chapter_note.common_mistakes,
-            start=1,
+        for mistake in (
+            chapter_note.common_mistakes
         ):
-            blocks.append(_heading_3(f"常見錯誤 {index}"))
-            blocks.extend(_paragraph(f"容易出錯：{mistake.mistake}"))
-            blocks.extend(_paragraph(f"正確觀念：{mistake.correction}"))
-    else:
-        blocks.extend(_paragraph("本章未產生常見錯誤提醒。"))
-
-    blocks.append(_heading_2("🧩 子章節整理"))
-
-    if chapter_note.subsections:
-        for subsection in chapter_note.subsections:
-            blocks.append(_heading_3(subsection.title))
-            blocks.extend(_paragraph(subsection.summary))
-
-            if subsection.key_points:
-                blocks.extend(_paragraph("重點："))
-
-                for point in subsection.key_points:
-                    blocks.extend(_bulleted_item(point))
-
-            if subsection.important_terms:
-                blocks.extend(_paragraph("術語："))
-
-                for term in subsection.important_terms:
-                    blocks.extend(_bulleted_item(term))
-    else:
-        blocks.extend(_paragraph("本章未產生子章節整理。"))
-
-    blocks.append(_heading_2("🖼️ PDF 圖片與畫面解讀"))
-
-    if chapter_note.image_insights:
-        for image in chapter_note.image_insights:
             blocks.append(
-                _heading_3(
-                    f"第 {image.page_number} 頁｜{image.title}"
+                _callout(
+                    (
+                        f"容易出錯：{mistake.mistake}\n"
+                        f"正確觀念：{mistake.correction}"
+                    ),
+                    icon="⚠️",
+                    color="yellow_background",
                 )
             )
-            blocks.extend(_paragraph(f"圖片類型：{image.image_type}"))
-            blocks.extend(_paragraph(image.description))
+    else:
+        blocks.extend(
+            _paragraph(
+                "本章未產生常見錯誤提醒。"
+            )
+        )
+
+    blocks.append(
+        _heading_2("🧩 子章節整理")
+    )
+
+    if chapter_note.subsections:
+        for subsection in (
+            chapter_note.subsections
+        ):
+            blocks.append(
+                _heading_3(
+                    subsection.title
+                )
+            )
+
+            blocks.extend(
+                _paragraph(
+                    subsection.summary
+                )
+            )
+
+            for point in (
+                subsection.key_points
+                or []
+            ):
+                blocks.extend(
+                    _bulleted_item(point)
+                )
+
+            for term in (
+                subsection.important_terms
+                or []
+            ):
+                blocks.extend(
+                    _quote(str(term))
+                )
+    else:
+        blocks.extend(
+            _paragraph(
+                "本章未產生子章節整理。"
+            )
+        )
+
+    blocks.append(
+        _heading_2("🖼️ PDF 圖片與畫面解讀")
+    )
+
+    (
+        visual_image_blocks,
+        visual_upload_errors,
+    ) = _build_visual_image_blocks(
+        visual_context=(
+            visual_context or []
+        ),
+        chapter_id=str(
+            chapter_id or "unknown"
+        ),
+    )
+
+    if visual_image_blocks:
+        blocks.extend(
+            visual_image_blocks
+        )
+
+    if chapter_note.image_insights:
+        for image in (
+            chapter_note.image_insights
+        ):
+            image_children: list[dict] = []
+
+            image_children.extend(
+                _paragraph(
+                    f"圖片類型：{image.image_type}"
+                )
+            )
+
+            image_children.extend(
+                _paragraph(
+                    image.description
+                )
+            )
 
             if image.related_subsection:
-                blocks.extend(
+                image_children.extend(
                     _paragraph(
-                        f"對應子章節：{image.related_subsection}"
+                        "對應子章節："
+                        f"{image.related_subsection}"
                     )
                 )
 
-            if image.learning_points:
-                blocks.extend(_paragraph("從圖片可學到："))
+            for point in (
+                image.learning_points
+                or []
+            ):
+                image_children.extend(
+                    _bulleted_item(point)
+                )
 
-                for point in image.learning_points:
-                    blocks.extend(_bulleted_item(point))
-    else:
-        blocks.extend(_paragraph("本章未產生 PDF 視覺補充。"))
+            blocks.append(
+                _toggle(
+                    title=(
+                        f"第 {image.page_number} 頁｜"
+                        f"{image.title}"
+                    ),
+                    children=image_children,
+                )
+            )
+    elif not visual_image_blocks:
+        blocks.extend(
+            _paragraph(
+                "本章未產生 PDF 視覺補充。"
+            )
+        )
 
-    blocks.append(_heading_2("🧪 練習建議"))
+    blocks.append(
+        _heading_2("🧪 練習建議")
+    )
 
     if chapter_note.practice_tips:
         for index, tip in enumerate(
             chapter_note.practice_tips,
             start=1,
         ):
-            blocks.append(_heading_3(f"練習 {index}｜{tip.title}"))
-            blocks.extend(_paragraph(f"操作：{tip.instruction}"))
+            tip_children = []
+
+            tip_children.extend(
+                _paragraph(
+                    f"操作：{tip.instruction}"
+                )
+            )
 
             if tip.expected_result:
-                blocks.extend(
-                    _paragraph(f"預期成果：{tip.expected_result}")
+                tip_children.extend(
+                    _paragraph(
+                        "預期成果："
+                        f"{tip.expected_result}"
+                    )
                 )
+
+            blocks.append(
+                _toggle(
+                    title=(
+                        f"練習 {index}｜"
+                        f"{tip.title}"
+                    ),
+                    children=tip_children,
+                )
+            )
     else:
-        blocks.extend(_paragraph("本章未產生練習建議。"))
-
-    blocks.append(_heading_2("🗺️ 章節學習地圖"))
-
-    if chapter_note.mermaid:
-        blocks.append(
-            _code_block(
-                code=chapter_note.mermaid,
-                language="plain text",
+        blocks.extend(
+            _paragraph(
+                "本章未產生練習建議。"
             )
         )
-    else:
-        blocks.extend(_paragraph("本章未產生 Mermaid 學習地圖。"))
 
-    blocks.append(_heading_2("❓ 章節 Quiz"))
-    blocks.extend(_build_quiz_blocks(chapter_note.quiz))
+    blocks.append(
+        _heading_2("❓ 章節 Quiz")
+    )
 
-    blocks.append(_heading_2("🗂️ 章節 Flash Cards"))
-    blocks.extend(_build_flashcard_blocks(chapter_note.flashcards))
+    blocks.extend(
+        _build_quiz_blocks(
+            chapter_note.quiz
+        )
+    )
 
-    return blocks
+    blocks.append(
+        _heading_2("🗂️ 章節 Flash Cards")
+    )
+
+    blocks.extend(
+        _build_flashcard_blocks(
+            chapter_note.flashcards
+        )
+    )
+
+    return blocks, visual_upload_errors
 
 
 def _get_visual_context(
@@ -1092,6 +1900,494 @@ def _get_chapter_note(
     return chapter_note, False
 
 
+
+def _resolve_document_id(
+    document_name: str,
+    document_id: str | int | None = None,
+) -> str | int | None:
+    """取得 SQLite 文件 ID。"""
+
+    if document_id:
+        return document_id
+
+    with get_database_session() as session:
+        statement = (
+            select(Document)
+            .where(Document.file_name == document_name)
+            .order_by(Document.updated_at.desc())
+        )
+
+        document = session.execute(
+            statement
+        ).scalars().first()
+
+        return document.id if document else None
+
+
+def _sync_chapter_note_to_sqlite(
+    document_id: str | int | None,
+    chapter_id: str,
+    chapter_note: ChapterLearningNote,
+    force: bool = False,
+) -> dict:
+    """將章節 Quiz / Flash Cards 同步到 SQLite。"""
+
+    if not document_id:
+        return {
+            "synced": False,
+            "skipped": True,
+            "reason": "找不到 SQLite 文件 ID",
+            "quiz_count": 0,
+            "flashcard_count": 0,
+        }
+
+    counts = count_chapter_learning_items(
+        document_id=document_id,
+        source_chapter_id=str(chapter_id),
+    )
+
+    quiz_count = int(
+        counts.get("quiz_count", 0) or 0
+    )
+
+    flashcard_count = int(
+        counts.get("flashcard_count", 0) or 0
+    )
+
+    if (
+        not force
+        and (
+            quiz_count > 0
+            or flashcard_count > 0
+        )
+    ):
+        return {
+            "synced": False,
+            "skipped": True,
+            "reason": "SQLite 已有學習資料，避免覆蓋既有作答紀錄",
+            "quiz_count": quiz_count,
+            "flashcard_count": flashcard_count,
+        }
+
+    result = save_chapter_learning_items(
+        document_id=document_id,
+        source_chapter_id=str(chapter_id),
+        chapter_note=chapter_note,
+    )
+
+    return {
+        "synced": bool(result.get("saved")),
+        "skipped": False,
+        "reason": result.get("reason", ""),
+        "quiz_count": int(
+            result.get("quiz_count", 0) or 0
+        ),
+        "flashcard_count": int(
+            result.get("flashcard_count", 0) or 0
+        ),
+    }
+
+
+def _sync_cached_notes_to_sqlite(
+    document_name: str,
+    document_id: str | int | None,
+    chapters: list[dict],
+) -> dict:
+    """將有效快取補寫到 SQLite。"""
+
+    summary = {
+        "synced_chapter_count": 0,
+        "skipped_chapter_count": 0,
+        "failed_chapter_count": 0,
+        "synced_quiz_count": 0,
+        "synced_flashcard_count": 0,
+        "errors": [],
+    }
+
+    if not document_id:
+        summary["errors"].append(
+            "找不到 SQLite 文件 ID"
+        )
+        return summary
+
+    for index, chapter in enumerate(
+        chapters,
+        start=1,
+    ):
+        chapter_id = str(
+            chapter.get("chapter_id")
+            or index
+        )
+
+        try:
+            cached_data = load_chapter_cache(
+                document_name=document_name,
+                chapter=chapter,
+            )
+
+            chapter_note = cached_data.get(
+                "chapter_note"
+            )
+
+            if (
+                not cached_data.get("note_cached")
+                or not cached_data.get("note_cache_valid")
+                or chapter_note is None
+            ):
+                summary[
+                    "skipped_chapter_count"
+                ] += 1
+                continue
+
+            result = _sync_chapter_note_to_sqlite(
+                document_id=document_id,
+                chapter_id=chapter_id,
+                chapter_note=chapter_note,
+                force=False,
+            )
+
+            if result.get("synced"):
+                summary[
+                    "synced_chapter_count"
+                ] += 1
+                summary[
+                    "synced_quiz_count"
+                ] += int(
+                    result.get(
+                        "quiz_count",
+                        0,
+                    )
+                    or 0
+                )
+                summary[
+                    "synced_flashcard_count"
+                ] += int(
+                    result.get(
+                        "flashcard_count",
+                        0,
+                    )
+                    or 0
+                )
+            elif result.get("skipped"):
+                summary[
+                    "skipped_chapter_count"
+                ] += 1
+            else:
+                summary[
+                    "failed_chapter_count"
+                ] += 1
+                summary["errors"].append(
+                    f"Module {chapter_id}："
+                    f"{result.get('reason', '同步失敗')}"
+                )
+
+        except Exception as error:
+            summary[
+                "failed_chapter_count"
+            ] += 1
+            summary["errors"].append(
+                f"Module {chapter_id}：{error}"
+            )
+
+    return summary
+
+
+
+
+
+def sync_single_chapter_cache_to_sqlite(
+    document_name: str,
+    document_id: str | int,
+    source_chapter_id: str | int,
+    chapter_title: str,
+) -> dict:
+    """
+    將單一章節的詳細學習筆記快取寫回 SQLite。
+
+    特性：
+    - 不呼叫 AI
+    - 不建立或修改 Notion 頁面
+    - 不依賴 Notion 匯出狀態
+    - 只有 SQLite 該章沒有 Quiz 與 Flash Cards 時才同步
+    - 避免覆蓋既有 QuizAttempt、FlashcardReview 與 WeakPoint
+    """
+
+    normalized_source_chapter_id = str(
+        source_chapter_id
+    ).strip()
+
+    normalized_chapter_title = str(
+        chapter_title or
+        f"Module {normalized_source_chapter_id}"
+    ).strip()
+
+    if not normalized_source_chapter_id:
+        raise ValueError(
+            "缺少 source_chapter_id，"
+            "無法定位章節快取。"
+        )
+
+    resolved_document_id = _resolve_document_id(
+        document_name=document_name,
+        document_id=document_id,
+    )
+
+    if not resolved_document_id:
+        raise ValueError(
+            "找不到對應的 SQLite 文件 ID。"
+        )
+
+    existing_counts = (
+        count_chapter_learning_items(
+            document_id=resolved_document_id,
+            source_chapter_id=(
+                normalized_source_chapter_id
+            ),
+        )
+    )
+
+    existing_quiz_count = int(
+        existing_counts.get(
+            "quiz_count",
+            0,
+        )
+        or 0
+    )
+
+    existing_flashcard_count = int(
+        existing_counts.get(
+            "flashcard_count",
+            0,
+        )
+        or 0
+    )
+
+    if (
+        existing_quiz_count > 0
+        or existing_flashcard_count > 0
+    ):
+        return {
+            "synced": False,
+            "skipped": True,
+            "reason": (
+                "該章 SQLite 已有 Quiz 或 Flash Cards。"
+                "請先在資料管理頁清除該章學習資料，"
+                "再執行重新同步。"
+            ),
+            "document_id": resolved_document_id,
+            "source_chapter_id": (
+                normalized_source_chapter_id
+            ),
+            "chapter_title": (
+                normalized_chapter_title
+            ),
+            "quiz_count": existing_quiz_count,
+            "flashcard_count": (
+                existing_flashcard_count
+            ),
+        }
+
+    cache_chapter = {
+        "chapter_id": (
+            normalized_source_chapter_id
+        ),
+        "source_chapter_id": (
+            normalized_source_chapter_id
+        ),
+        "chapter_order": (
+            normalized_source_chapter_id
+        ),
+        "title": normalized_chapter_title,
+        "chapter_title": (
+            normalized_chapter_title
+        ),
+    }
+
+    cached_data = load_chapter_cache(
+        document_name=document_name,
+        chapter=cache_chapter,
+    )
+
+    chapter_note = cached_data.get(
+        "chapter_note"
+    )
+
+    if not cached_data.get(
+        "note_cached"
+    ):
+        return {
+            "synced": False,
+            "skipped": False,
+            "reason": (
+                "找不到這個章節的詳細筆記快取。"
+                "可能是舊版快取格式或快取檔案已不存在。"
+            ),
+            "document_id": resolved_document_id,
+            "source_chapter_id": (
+                normalized_source_chapter_id
+            ),
+            "chapter_title": (
+                normalized_chapter_title
+            ),
+            "quiz_count": 0,
+            "flashcard_count": 0,
+        }
+
+    if not cached_data.get(
+        "note_cache_valid"
+    ):
+        return {
+            "synced": False,
+            "skipped": False,
+            "reason": (
+                "章節快取存在，但未通過目前版本的"
+                " ChapterLearningNote 格式驗證。"
+            ),
+            "document_id": resolved_document_id,
+            "source_chapter_id": (
+                normalized_source_chapter_id
+            ),
+            "chapter_title": (
+                normalized_chapter_title
+            ),
+            "quiz_count": 0,
+            "flashcard_count": 0,
+        }
+
+    if chapter_note is None:
+        return {
+            "synced": False,
+            "skipped": False,
+            "reason": (
+                "章節快取中沒有可讀取的詳細筆記內容。"
+            ),
+            "document_id": resolved_document_id,
+            "source_chapter_id": (
+                normalized_source_chapter_id
+            ),
+            "chapter_title": (
+                normalized_chapter_title
+            ),
+            "quiz_count": 0,
+            "flashcard_count": 0,
+        }
+
+    is_valid, reason = is_valid_chapter_note(
+        chapter_note
+    )
+
+    if not is_valid:
+        return {
+            "synced": False,
+            "skipped": False,
+            "reason": (
+                "章節詳細筆記快取無效："
+                f"{reason}"
+            ),
+            "document_id": resolved_document_id,
+            "source_chapter_id": (
+                normalized_source_chapter_id
+            ),
+            "chapter_title": (
+                normalized_chapter_title
+            ),
+            "quiz_count": 0,
+            "flashcard_count": 0,
+        }
+
+    result = _sync_chapter_note_to_sqlite(
+        document_id=resolved_document_id,
+        chapter_id=(
+            normalized_source_chapter_id
+        ),
+        chapter_note=chapter_note,
+        force=False,
+    )
+
+    return {
+        "synced": bool(
+            result.get("synced")
+        ),
+        "skipped": bool(
+            result.get("skipped")
+        ),
+        "reason": result.get(
+            "reason",
+            "",
+        ),
+        "document_id": resolved_document_id,
+        "source_chapter_id": (
+            normalized_source_chapter_id
+        ),
+        "chapter_title": (
+            normalized_chapter_title
+        ),
+        "quiz_count": int(
+            result.get(
+                "quiz_count",
+                0,
+            )
+            or 0
+        ),
+        "flashcard_count": int(
+            result.get(
+                "flashcard_count",
+                0,
+            )
+            or 0
+        ),
+    }
+
+
+def sync_document_learning_cache_to_sqlite(
+    document_name: str,
+    chapters: list[dict],
+    document_id: str | int | None = None,
+) -> dict:
+    """
+    將既有詳細學習筆記快取回填至 SQLite。
+
+    這個流程：
+    - 不建立或修改 Notion 頁面
+    - 不呼叫 AI
+    - 不依賴 Notion 匯出狀態
+    - 只讀取有效的 ChapterLearningNote 快取
+    - SQLite 已有 Quiz / Flash Cards 時會跳過，避免洗掉練習紀錄
+    """
+
+    resolved_document_id = _resolve_document_id(
+        document_name=document_name,
+        document_id=document_id,
+    )
+
+    summary = _sync_cached_notes_to_sqlite(
+        document_name=document_name,
+        document_id=resolved_document_id,
+        chapters=chapters,
+    )
+
+    return {
+        "document_name": document_name,
+        "document_id": resolved_document_id,
+        "synced_chapter_count": int(
+            summary.get("synced_chapter_count", 0) or 0
+        ),
+        "skipped_chapter_count": int(
+            summary.get("skipped_chapter_count", 0) or 0
+        ),
+        "failed_chapter_count": int(
+            summary.get("failed_chapter_count", 0) or 0
+        ),
+        "synced_quiz_count": int(
+            summary.get("synced_quiz_count", 0) or 0
+        ),
+        "synced_flashcard_count": int(
+            summary.get("synced_flashcard_count", 0) or 0
+        ),
+        "errors": list(summary.get("errors", []) or []),
+    }
+
+
 def create_document_learning_notebook(
     document_name: str,
     chapters: list[dict],
@@ -1099,6 +2395,7 @@ def create_document_learning_notebook(
     progress_callback: Optional[Callable[[int, int, str], None]] = None,
     max_visual_pages: int = 3,
     resume: bool = True,
+    document_id: str | int | None = None,
 ) -> dict:
     """
     建立整份文件的 Notion 詳細學習筆記。
@@ -1116,6 +2413,19 @@ def create_document_learning_notebook(
 
     notion = _get_notion_client()
     chapter_count = len(chapters)
+
+    resolved_document_id = _resolve_document_id(
+        document_name=document_name,
+        document_id=document_id,
+    )
+
+    sqlite_sync_summary = (
+        _sync_cached_notes_to_sqlite(
+            document_name=document_name,
+            document_id=resolved_document_id,
+            chapters=chapters,
+        )
+    )
 
     if not resume:
         _safe_reset_export_state(
@@ -1139,6 +2449,17 @@ def create_document_learning_notebook(
 
         parent_page_id = parent_page["id"]
         parent_page_url = parent_page.get("url")
+
+        parent_blocks = _build_parent_page_blocks(
+            document_name=document_name,
+            chapter_count=chapter_count,
+        )
+
+        _append_blocks(
+            notion=notion,
+            page_id=parent_page_id,
+            blocks=parent_blocks,
+        )
 
         _safe_set_parent_page(
             document_name=document_name,
@@ -1194,11 +2515,35 @@ def create_document_learning_notebook(
             "cached_visual_count": 0,
             "cached_note_count": 0,
             "regenerated_note_count": 0,
+            "sqlite_synced_chapter_count": sqlite_sync_summary.get(
+                "synced_chapter_count",
+                0,
+            ),
+            "sqlite_skipped_chapter_count": sqlite_sync_summary.get(
+                "skipped_chapter_count",
+                0,
+            ),
+            "sqlite_failed_chapter_count": sqlite_sync_summary.get(
+                "failed_chapter_count",
+                0,
+            ),
+            "sqlite_synced_quiz_count": sqlite_sync_summary.get(
+                "synced_quiz_count",
+                0,
+            ),
+            "sqlite_synced_flashcard_count": sqlite_sync_summary.get(
+                "synced_flashcard_count",
+                0,
+            ),
+            "sqlite_sync_errors": sqlite_sync_summary.get(
+                "errors",
+                [],
+            ),
             "is_finished": True,
         }
 
     for index, chapter in enumerate(pending_chapters, start=1):
-        chapter_id = str(chapter.get("chapter_id"))
+        chapter_id = str(chapter.get("chapter_id") or index)
         chapter_title = chapter.get("title", f"Module {chapter_id}")
 
         export_state = _safe_load_export_state(
@@ -1254,6 +2599,53 @@ def create_document_learning_notebook(
             else:
                 regenerated_note_count += 1
 
+            sync_result = _sync_chapter_note_to_sqlite(
+                document_id=resolved_document_id,
+                chapter_id=chapter_id,
+                chapter_note=chapter_note,
+                force=not note_used_cache,
+            )
+
+            if sync_result.get("synced"):
+                sqlite_sync_summary[
+                    "synced_chapter_count"
+                ] += 1
+                sqlite_sync_summary[
+                    "synced_quiz_count"
+                ] += int(
+                    sync_result.get(
+                        "quiz_count",
+                        0,
+                    )
+                    or 0
+                )
+                sqlite_sync_summary[
+                    "synced_flashcard_count"
+                ] += int(
+                    sync_result.get(
+                        "flashcard_count",
+                        0,
+                    )
+                    or 0
+                )
+
+            elif sync_result.get("skipped"):
+                sqlite_sync_summary[
+                    "skipped_chapter_count"
+                ] += 1
+
+            else:
+                sqlite_sync_summary[
+                    "failed_chapter_count"
+                ] += 1
+                sqlite_sync_summary.setdefault(
+                    "errors",
+                    [],
+                ).append(
+                    f"Module {chapter_id}："
+                    f"{sync_result.get('reason', 'SQLite 同步失敗')}"
+                )
+
             is_valid, reason = is_valid_chapter_note(chapter_note)
 
             if not is_valid:
@@ -1261,7 +2653,10 @@ def create_document_learning_notebook(
                     f"拒絕建立 Notion 子頁，詳細筆記無效：{reason}"
                 )
 
-            child_page_title = f"Module {chapter_id}｜{chapter_title}"
+            child_page_title = (
+                f"Module {chapter_id}｜"
+                f"{chapter_title}"
+            )
 
             child_page = _create_page(
                 notion=notion,
@@ -1272,7 +2667,29 @@ def create_document_learning_notebook(
             child_page_id = child_page["id"]
             child_page_url = child_page.get("url")
 
-            blocks = _build_chapter_note_blocks(chapter_note)
+            (
+                blocks,
+                visual_upload_errors,
+            ) = _build_chapter_note_blocks(
+                chapter_note=chapter_note,
+                visual_context=visual_context,
+                chapter_id=chapter_id,
+            )
+
+            if visual_upload_errors:
+                sqlite_sync_summary.setdefault(
+                    "errors",
+                    [],
+                ).extend(
+                    [
+                        (
+                            f"Module {chapter_id} "
+                            f"圖片上傳：{message}"
+                        )
+                        for message
+                        in visual_upload_errors
+                    ]
+                )
 
             if not blocks:
                 raise ValueError("章節 blocks 為空，拒絕建立空白 Notion 子頁。")
@@ -1374,6 +2791,30 @@ def create_document_learning_notebook(
         "cached_visual_count": cached_visual_count,
         "cached_note_count": cached_note_count,
         "regenerated_note_count": regenerated_note_count,
+        "sqlite_synced_chapter_count": sqlite_sync_summary.get(
+            "synced_chapter_count",
+            0,
+        ),
+        "sqlite_skipped_chapter_count": sqlite_sync_summary.get(
+            "skipped_chapter_count",
+            0,
+        ),
+        "sqlite_failed_chapter_count": sqlite_sync_summary.get(
+            "failed_chapter_count",
+            0,
+        ),
+        "sqlite_synced_quiz_count": sqlite_sync_summary.get(
+            "synced_quiz_count",
+            0,
+        ),
+        "sqlite_synced_flashcard_count": sqlite_sync_summary.get(
+            "synced_flashcard_count",
+            0,
+        ),
+        "sqlite_sync_errors": sqlite_sync_summary.get(
+            "errors",
+            [],
+        ),
         "is_finished": is_finished,
         "updated_at": datetime.utcnow().isoformat(),
     }

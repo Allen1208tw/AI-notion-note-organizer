@@ -1,0 +1,960 @@
+from __future__ import annotations
+
+from datetime import datetime
+from typing import Optional
+
+from sqlalchemy import delete, func, select
+
+from src.database.database import get_database_session
+from src.database.models import (
+    Chapter,
+    Document,
+    Flashcard,
+    FlashcardReview,
+    Quiz,
+    QuizAttempt,
+    ReviewSchedule,
+    WeakPoint,
+)
+
+
+def _safe_text(value, default: str = "") -> str:
+    """安全轉換為字串。"""
+
+    if value is None:
+        return default
+
+    try:
+        return str(value)
+    except Exception:
+        return default
+
+
+def _safe_int(value, default: int = 0) -> int:
+    """安全轉換為整數。"""
+
+    try:
+        if value is None:
+            return default
+
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _utc_now() -> datetime:
+    """取得目前 UTC 時間。"""
+
+    return datetime.utcnow()
+
+
+def get_all_learning_documents() -> list[dict]:
+    """
+    取得所有 SQLite 文件及學習資料統計。
+
+    用於：
+    - 管理頁面
+    - 資料診斷
+    - 文件刪除
+    - 確認 Quiz / Flash Card 是否正確寫入
+    """
+
+    with get_database_session() as session:
+        chapter_count_subquery = (
+            select(
+                Chapter.document_id.label(
+                    "document_id"
+                ),
+                func.count(
+                    Chapter.id
+                ).label(
+                    "chapter_count"
+                ),
+            )
+            .group_by(
+                Chapter.document_id
+            )
+            .subquery()
+        )
+
+        quiz_count_subquery = (
+            select(
+                Quiz.document_id.label(
+                    "document_id"
+                ),
+                func.count(
+                    Quiz.id
+                ).label(
+                    "quiz_count"
+                ),
+            )
+            .group_by(
+                Quiz.document_id
+            )
+            .subquery()
+        )
+
+        flashcard_count_subquery = (
+            select(
+                Flashcard.document_id.label(
+                    "document_id"
+                ),
+                func.count(
+                    Flashcard.id
+                ).label(
+                    "flashcard_count"
+                ),
+            )
+            .group_by(
+                Flashcard.document_id
+            )
+            .subquery()
+        )
+
+        quiz_attempt_count_subquery = (
+            select(
+                Quiz.document_id.label(
+                    "document_id"
+                ),
+                func.count(
+                    QuizAttempt.id
+                ).label(
+                    "quiz_attempt_count"
+                ),
+            )
+            .join(
+                QuizAttempt,
+                QuizAttempt.quiz_id == Quiz.id,
+            )
+            .group_by(
+                Quiz.document_id
+            )
+            .subquery()
+        )
+
+        flashcard_review_count_subquery = (
+            select(
+                Flashcard.document_id.label(
+                    "document_id"
+                ),
+                func.count(
+                    FlashcardReview.id
+                ).label(
+                    "flashcard_review_count"
+                ),
+            )
+            .join(
+                FlashcardReview,
+                FlashcardReview.flashcard_id
+                == Flashcard.id,
+            )
+            .group_by(
+                Flashcard.document_id
+            )
+            .subquery()
+        )
+
+        weak_point_count_subquery = (
+            select(
+                WeakPoint.document_id.label(
+                    "document_id"
+                ),
+                func.count(
+                    WeakPoint.id
+                ).label(
+                    "weak_point_count"
+                ),
+            )
+            .group_by(
+                WeakPoint.document_id
+            )
+            .subquery()
+        )
+
+        statement = (
+            select(
+                Document,
+                func.coalesce(
+                    chapter_count_subquery.c.chapter_count,
+                    0,
+                ).label(
+                    "chapter_count"
+                ),
+                func.coalesce(
+                    quiz_count_subquery.c.quiz_count,
+                    0,
+                ).label(
+                    "quiz_count"
+                ),
+                func.coalesce(
+                    flashcard_count_subquery.c.flashcard_count,
+                    0,
+                ).label(
+                    "flashcard_count"
+                ),
+                func.coalesce(
+                    quiz_attempt_count_subquery.c.quiz_attempt_count,
+                    0,
+                ).label(
+                    "quiz_attempt_count"
+                ),
+                func.coalesce(
+                    flashcard_review_count_subquery.c.flashcard_review_count,
+                    0,
+                ).label(
+                    "flashcard_review_count"
+                ),
+                func.coalesce(
+                    weak_point_count_subquery.c.weak_point_count,
+                    0,
+                ).label(
+                    "weak_point_count"
+                ),
+            )
+            .outerjoin(
+                chapter_count_subquery,
+                chapter_count_subquery.c.document_id
+                == Document.id,
+            )
+            .outerjoin(
+                quiz_count_subquery,
+                quiz_count_subquery.c.document_id
+                == Document.id,
+            )
+            .outerjoin(
+                flashcard_count_subquery,
+                flashcard_count_subquery.c.document_id
+                == Document.id,
+            )
+            .outerjoin(
+                quiz_attempt_count_subquery,
+                quiz_attempt_count_subquery.c.document_id
+                == Document.id,
+            )
+            .outerjoin(
+                flashcard_review_count_subquery,
+                flashcard_review_count_subquery.c.document_id
+                == Document.id,
+            )
+            .outerjoin(
+                weak_point_count_subquery,
+                weak_point_count_subquery.c.document_id
+                == Document.id,
+            )
+            .order_by(
+                Document.updated_at.desc()
+            )
+        )
+
+        rows = session.execute(
+            statement
+        ).all()
+
+        return [
+            {
+                "id": document.id,
+                "file_name": document.file_name,
+                "file_extension": document.file_extension,
+                "status": document.status,
+                "export_status": getattr(
+                    document,
+                    "export_status",
+                    "pending",
+                ),
+                "chapter_count": _safe_int(
+                    chapter_count
+                ),
+                "quiz_count": _safe_int(
+                    quiz_count
+                ),
+                "flashcard_count": _safe_int(
+                    flashcard_count
+                ),
+                "quiz_attempt_count": _safe_int(
+                    quiz_attempt_count
+                ),
+                "flashcard_review_count": _safe_int(
+                    flashcard_review_count
+                ),
+                "weak_point_count": _safe_int(
+                    weak_point_count
+                ),
+                "created_at": document.created_at,
+                "updated_at": document.updated_at,
+            }
+            for (
+                document,
+                chapter_count,
+                quiz_count,
+                flashcard_count,
+                quiz_attempt_count,
+                flashcard_review_count,
+                weak_point_count,
+            ) in rows
+        ]
+
+
+def get_document_diagnostics(
+    document_id: int | str,
+) -> dict:
+    """
+    診斷單一文件的 SQLite 資料完整性。
+
+    檢查：
+    - 章節是否存在
+    - source_chapter_id 是否重複
+    - 是否有空白章節標題
+    - Quiz / Flash Card 是否集中在單一章節
+    - 是否存在沒有父項目的學習紀錄
+    - 每章 Quiz / Flash Card 數量
+    """
+
+    with get_database_session() as session:
+        document = session.get(
+            Document,
+            document_id,
+        )
+
+        if document is None:
+            raise ValueError(
+                "找不到指定文件。"
+            )
+
+        chapter_statement = (
+            select(
+                Chapter
+            )
+            .where(
+                Chapter.document_id
+                == document_id
+            )
+            .order_by(
+                Chapter.chapter_order.asc(),
+                Chapter.id.asc(),
+            )
+        )
+
+        chapters = session.execute(
+            chapter_statement
+        ).scalars().all()
+
+        chapter_rows = []
+
+        source_id_counts: dict[str, int] = {}
+
+        for chapter in chapters:
+            source_id = _safe_text(
+                chapter.source_chapter_id
+            )
+
+            source_id_counts[source_id] = (
+                source_id_counts.get(
+                    source_id,
+                    0,
+                )
+                + 1
+            )
+
+            quiz_count = (
+                session.query(
+                    func.count(
+                        Quiz.id
+                    )
+                )
+                .filter(
+                    Quiz.chapter_id
+                    == chapter.id
+                )
+                .scalar()
+                or 0
+            )
+
+            flashcard_count = (
+                session.query(
+                    func.count(
+                        Flashcard.id
+                    )
+                )
+                .filter(
+                    Flashcard.chapter_id
+                    == chapter.id
+                )
+                .scalar()
+                or 0
+            )
+
+            chapter_rows.append(
+                {
+                    "id": chapter.id,
+                    "source_chapter_id": (
+                        source_id
+                    ),
+                    "chapter_order": (
+                        chapter.chapter_order
+                    ),
+                    "title": chapter.title,
+                    "quiz_count": _safe_int(
+                        quiz_count
+                    ),
+                    "flashcard_count": _safe_int(
+                        flashcard_count
+                    ),
+                    "created_at": chapter.created_at,
+                    "updated_at": chapter.updated_at,
+                }
+            )
+
+        duplicate_source_ids = [
+            source_id
+            for source_id, count
+            in source_id_counts.items()
+            if (
+                source_id
+                and count > 1
+            )
+        ]
+
+        empty_title_chapters = [
+            item
+            for item in chapter_rows
+            if not _safe_text(
+                item.get("title")
+            ).strip()
+        ]
+
+        chapters_with_learning_data = [
+            item
+            for item in chapter_rows
+            if (
+                _safe_int(
+                    item.get("quiz_count")
+                )
+                > 0
+                or _safe_int(
+                    item.get("flashcard_count")
+                )
+                > 0
+            )
+        ]
+
+        total_quiz_count = sum(
+            _safe_int(
+                item.get("quiz_count")
+            )
+            for item in chapter_rows
+        )
+
+        total_flashcard_count = sum(
+            _safe_int(
+                item.get("flashcard_count")
+            )
+            for item in chapter_rows
+        )
+
+        quiz_distribution_warning = (
+            len(chapter_rows) > 1
+            and total_quiz_count > 0
+            and len(
+                [
+                    item
+                    for item in chapter_rows
+                    if _safe_int(
+                        item.get("quiz_count")
+                    )
+                    > 0
+                ]
+            )
+            == 1
+        )
+
+        flashcard_distribution_warning = (
+            len(chapter_rows) > 1
+            and total_flashcard_count > 0
+            and len(
+                [
+                    item
+                    for item in chapter_rows
+                    if _safe_int(
+                        item.get(
+                            "flashcard_count"
+                        )
+                    )
+                    > 0
+                ]
+            )
+            == 1
+        )
+
+        orphan_quiz_attempt_count = (
+            session.query(
+                func.count(
+                    QuizAttempt.id
+                )
+            )
+            .outerjoin(
+                Quiz,
+                QuizAttempt.quiz_id
+                == Quiz.id,
+            )
+            .filter(
+                Quiz.id.is_(None)
+            )
+            .scalar()
+            or 0
+        )
+
+        orphan_flashcard_review_count = (
+            session.query(
+                func.count(
+                    FlashcardReview.id
+                )
+            )
+            .outerjoin(
+                Flashcard,
+                FlashcardReview.flashcard_id
+                == Flashcard.id,
+            )
+            .filter(
+                Flashcard.id.is_(None)
+            )
+            .scalar()
+            or 0
+        )
+
+        warnings = []
+
+        if not chapters:
+            warnings.append(
+                "文件沒有任何章節資料。"
+            )
+
+        if duplicate_source_ids:
+            warnings.append(
+                "偵測到重複的 source_chapter_id："
+                + ", ".join(
+                    duplicate_source_ids
+                )
+            )
+
+        if empty_title_chapters:
+            warnings.append(
+                "存在空白章節標題。"
+            )
+
+        if quiz_distribution_warning:
+            warnings.append(
+                "Quiz 只集中在單一章節，"
+                "可能存在章節 ID 對應問題。"
+            )
+
+        if flashcard_distribution_warning:
+            warnings.append(
+                "Flash Cards 只集中在單一章節，"
+                "可能存在章節 ID 對應問題。"
+            )
+
+        if orphan_quiz_attempt_count > 0:
+            warnings.append(
+                "存在找不到 Quiz 的作答紀錄。"
+            )
+
+        if orphan_flashcard_review_count > 0:
+            warnings.append(
+                "存在找不到 Flash Card 的複習紀錄。"
+            )
+
+        return {
+            "document": {
+                "id": document.id,
+                "file_name": document.file_name,
+                "file_extension": document.file_extension,
+                "status": document.status,
+                "export_status": getattr(
+                    document,
+                    "export_status",
+                    "pending",
+                ),
+                "created_at": document.created_at,
+                "updated_at": document.updated_at,
+            },
+            "summary": {
+                "chapter_count": len(
+                    chapter_rows
+                ),
+                "chapter_with_learning_data_count": (
+                    len(
+                        chapters_with_learning_data
+                    )
+                ),
+                "quiz_count": total_quiz_count,
+                "flashcard_count": (
+                    total_flashcard_count
+                ),
+                "duplicate_source_id_count": (
+                    len(
+                        duplicate_source_ids
+                    )
+                ),
+                "orphan_quiz_attempt_count": (
+                    _safe_int(
+                        orphan_quiz_attempt_count
+                    )
+                ),
+                "orphan_flashcard_review_count": (
+                    _safe_int(
+                        orphan_flashcard_review_count
+                    )
+                ),
+            },
+            "chapters": chapter_rows,
+            "warnings": warnings,
+            "is_healthy": len(warnings) == 0,
+            "checked_at": _utc_now(),
+        }
+
+
+def delete_document_learning_data(
+    document_id: int | str,
+    delete_document_record: bool = False,
+) -> dict:
+    """
+    刪除單一文件的學習資料。
+
+    預設保留 documents 主紀錄，只刪除：
+    - QuizAttempt
+    - FlashcardReview
+    - ReviewSchedule
+    - WeakPoint
+    - Quiz
+    - Flashcard
+    - Chapter
+
+    delete_document_record=True 時連 Document 一併刪除。
+    """
+
+    with get_database_session() as session:
+        document = session.get(
+            Document,
+            document_id,
+        )
+
+        if document is None:
+            raise ValueError(
+                "找不到指定文件。"
+            )
+
+        quiz_ids = session.execute(
+            select(
+                Quiz.id
+            ).where(
+                Quiz.document_id
+                == document_id
+            )
+        ).scalars().all()
+
+        flashcard_ids = session.execute(
+            select(
+                Flashcard.id
+            ).where(
+                Flashcard.document_id
+                == document_id
+            )
+        ).scalars().all()
+
+        deleted_counts = {
+            "quiz_attempts": 0,
+            "flashcard_reviews": 0,
+            "review_schedules": 0,
+            "weak_points": 0,
+            "quizzes": 0,
+            "flashcards": 0,
+            "chapters": 0,
+            "documents": 0,
+        }
+
+        if quiz_ids:
+            result = session.execute(
+                delete(
+                    QuizAttempt
+                ).where(
+                    QuizAttempt.quiz_id.in_(
+                        quiz_ids
+                    )
+                )
+            )
+
+            deleted_counts[
+                "quiz_attempts"
+            ] = result.rowcount or 0
+
+        if flashcard_ids:
+            result = session.execute(
+                delete(
+                    FlashcardReview
+                ).where(
+                    FlashcardReview.flashcard_id.in_(
+                        flashcard_ids
+                    )
+                )
+            )
+
+            deleted_counts[
+                "flashcard_reviews"
+            ] = result.rowcount or 0
+
+            result = session.execute(
+                delete(
+                    ReviewSchedule
+                ).where(
+                    ReviewSchedule.item_type
+                    == "flashcard",
+                    ReviewSchedule.item_id.in_(
+                        flashcard_ids
+                    ),
+                )
+            )
+
+            deleted_counts[
+                "review_schedules"
+            ] = result.rowcount or 0
+
+        result = session.execute(
+            delete(
+                WeakPoint
+            ).where(
+                WeakPoint.document_id
+                == document_id
+            )
+        )
+
+        deleted_counts[
+            "weak_points"
+        ] = result.rowcount or 0
+
+        result = session.execute(
+            delete(
+                Quiz
+            ).where(
+                Quiz.document_id
+                == document_id
+            )
+        )
+
+        deleted_counts[
+            "quizzes"
+        ] = result.rowcount or 0
+
+        result = session.execute(
+            delete(
+                Flashcard
+            ).where(
+                Flashcard.document_id
+                == document_id
+            )
+        )
+
+        deleted_counts[
+            "flashcards"
+        ] = result.rowcount or 0
+
+        result = session.execute(
+            delete(
+                Chapter
+            ).where(
+                Chapter.document_id
+                == document_id
+            )
+        )
+
+        deleted_counts[
+            "chapters"
+        ] = result.rowcount or 0
+
+        if delete_document_record:
+            result = session.execute(
+                delete(
+                    Document
+                ).where(
+                    Document.id
+                    == document_id
+                )
+            )
+
+            deleted_counts[
+                "documents"
+            ] = result.rowcount or 0
+
+        else:
+            document.status = "parsed"
+            document.export_status = "pending"
+            document.updated_at = _utc_now()
+
+        session.commit()
+
+        return {
+            "deleted": True,
+            "document_id": _safe_text(
+                document_id
+            ),
+            "document_name": document.file_name,
+            "delete_document_record": (
+                delete_document_record
+            ),
+            "deleted_counts": deleted_counts,
+        }
+
+
+def delete_single_chapter_learning_data(
+    document_id: int | str,
+    chapter_id: int | str,
+) -> dict:
+    """
+    刪除指定章節的 Quiz、Flash Cards 與相關紀錄。
+
+    保留章節主紀錄，方便重新同步該章快取。
+    """
+
+    with get_database_session() as session:
+        chapter = session.get(
+            Chapter,
+            chapter_id,
+        )
+
+        if (
+            chapter is None
+            or _safe_text(
+                chapter.document_id
+            )
+            != _safe_text(
+                document_id
+            )
+        ):
+            raise ValueError(
+                "找不到指定章節。"
+            )
+
+        quiz_ids = session.execute(
+            select(
+                Quiz.id
+            ).where(
+                Quiz.chapter_id
+                == chapter_id
+            )
+        ).scalars().all()
+
+        flashcard_ids = session.execute(
+            select(
+                Flashcard.id
+            ).where(
+                Flashcard.chapter_id
+                == chapter_id
+            )
+        ).scalars().all()
+
+        deleted_counts = {
+            "quiz_attempts": 0,
+            "flashcard_reviews": 0,
+            "review_schedules": 0,
+            "weak_points": 0,
+            "quizzes": 0,
+            "flashcards": 0,
+        }
+
+        if quiz_ids:
+            result = session.execute(
+                delete(
+                    QuizAttempt
+                ).where(
+                    QuizAttempt.quiz_id.in_(
+                        quiz_ids
+                    )
+                )
+            )
+
+            deleted_counts[
+                "quiz_attempts"
+            ] = result.rowcount or 0
+
+        if flashcard_ids:
+            result = session.execute(
+                delete(
+                    FlashcardReview
+                ).where(
+                    FlashcardReview.flashcard_id.in_(
+                        flashcard_ids
+                    )
+                )
+            )
+
+            deleted_counts[
+                "flashcard_reviews"
+            ] = result.rowcount or 0
+
+            result = session.execute(
+                delete(
+                    ReviewSchedule
+                ).where(
+                    ReviewSchedule.item_type
+                    == "flashcard",
+                    ReviewSchedule.item_id.in_(
+                        flashcard_ids
+                    ),
+                )
+            )
+
+            deleted_counts[
+                "review_schedules"
+            ] = result.rowcount or 0
+
+        result = session.execute(
+            delete(
+                WeakPoint
+            ).where(
+                WeakPoint.chapter_id
+                == chapter_id
+            )
+        )
+
+        deleted_counts[
+            "weak_points"
+        ] = result.rowcount or 0
+
+        result = session.execute(
+            delete(
+                Quiz
+            ).where(
+                Quiz.chapter_id
+                == chapter_id
+            )
+        )
+
+        deleted_counts[
+            "quizzes"
+        ] = result.rowcount or 0
+
+        result = session.execute(
+            delete(
+                Flashcard
+            ).where(
+                Flashcard.chapter_id
+                == chapter_id
+            )
+        )
+
+        deleted_counts[
+            "flashcards"
+        ] = result.rowcount or 0
+
+        session.commit()
+
+        return {
+            "deleted": True,
+            "document_id": _safe_text(
+                document_id
+            ),
+            "chapter_id": _safe_text(
+                chapter_id
+            ),
+            "chapter_title": chapter.title,
+            "deleted_counts": deleted_counts,
+        }

@@ -232,6 +232,301 @@ def is_valid_chapter_note(chapter_note: Any) -> tuple[bool, str]:
     return True, "有效詳細筆記"
 
 
+
+def _normalize_compare_text(value: Any) -> str:
+    """正規化章節比對文字。"""
+
+    text = str(value or "").strip().lower()
+    text = re.sub(r"\s+", "", text)
+    text = re.sub(r"[^\w\u4e00-\u9fff]+", "", text)
+
+    return text
+
+
+def _extract_cache_file_chapter_id(
+    cache_path: Path,
+) -> str:
+    """從快取檔名擷取 chapter_id。"""
+
+    match = re.match(
+        r"chapter_(.+?)_[0-9a-fA-F]{12}\.json$",
+        cache_path.name,
+    )
+
+    if not match:
+        return ""
+
+    return str(
+        match.group(1)
+    ).strip()
+
+
+def _read_raw_cache_file(
+    cache_path: Path,
+) -> dict:
+    """
+    讀取原始快取檔案。
+
+    與 _read_cache_file 不同：
+    - 不會因 cache_version 不同直接回傳空快取
+    - 用於舊版快取 fallback 掃描
+    """
+
+    if not cache_path.exists():
+        return {}
+
+    try:
+        with cache_path.open(
+            "r",
+            encoding="utf-8",
+        ) as file:
+            data = json.load(file)
+
+        if isinstance(data, dict):
+            return data
+
+    except Exception:
+        pass
+
+    return {}
+
+
+def _score_cache_candidate(
+    cache_path: Path,
+    cache_data: dict,
+    chapter: dict,
+) -> int:
+    """
+    計算快取候選檔案與目標章節的匹配分數。
+
+    分數來源：
+    - chapter_id 完全相同
+    - chapter_order 完全相同
+    - chapter title 完全相同
+    - chapter title 部分相同
+    - 快取內 ChapterLearningNote.chapter_title 相同
+    """
+
+    target_ids = {
+        str(
+            chapter.get("chapter_id")
+            or ""
+        ).strip(),
+        str(
+            chapter.get("chapter_order")
+            or ""
+        ).strip(),
+        str(
+            chapter.get("source_chapter_id")
+            or ""
+        ).strip(),
+    }
+
+    target_ids.discard("")
+
+    target_title = _normalize_compare_text(
+        chapter.get("title")
+        or chapter.get("chapter_title")
+        or ""
+    )
+
+    candidate_id = (
+        _extract_cache_file_chapter_id(
+            cache_path
+        )
+    )
+
+    score = 0
+
+    if candidate_id and candidate_id in target_ids:
+        score += 100
+
+    chapter_note = cache_data.get(
+        "chapter_note"
+    )
+
+    cached_title = ""
+
+    if isinstance(chapter_note, dict):
+        cached_title = _normalize_compare_text(
+            chapter_note.get(
+                "chapter_title"
+            )
+            or chapter_note.get("title")
+            or ""
+        )
+
+    if (
+        target_title
+        and cached_title
+        and target_title == cached_title
+    ):
+        score += 80
+
+    elif (
+        target_title
+        and cached_title
+        and (
+            target_title in cached_title
+            or cached_title in target_title
+        )
+    ):
+        score += 40
+
+    return score
+
+
+def _find_chapter_cache_fallback(
+    document_name: str,
+    chapter: dict,
+) -> Path | None:
+    """
+    以多重條件尋找章節快取。
+
+    fallback 順序：
+    1. chapter_id / source_chapter_id / chapter_order
+    2. ChapterLearningNote.chapter_title
+    3. 只有一個快取檔時直接使用
+    """
+
+    document_dir = (
+        _get_document_cache_dir(
+            document_name
+        )
+    )
+
+    cache_files = sorted(
+        document_dir.glob(
+            "chapter_*.json"
+        )
+    )
+
+    if not cache_files:
+        return None
+
+    scored_candidates = []
+
+    for candidate_path in cache_files:
+        raw_data = _read_raw_cache_file(
+            candidate_path
+        )
+
+        score = _score_cache_candidate(
+            cache_path=candidate_path,
+            cache_data=raw_data,
+            chapter=chapter,
+        )
+
+        if score > 0:
+            scored_candidates.append(
+                (
+                    score,
+                    candidate_path.stat().st_mtime,
+                    candidate_path,
+                )
+            )
+
+    if scored_candidates:
+        scored_candidates.sort(
+            key=lambda item: (
+                item[0],
+                item[1],
+            ),
+            reverse=True,
+        )
+
+        return scored_candidates[0][2]
+
+    if len(cache_files) == 1:
+        return cache_files[0]
+
+    return None
+
+
+def _parse_cache_data(
+    cache_data: dict,
+    cache_path: Path,
+) -> dict:
+    """將快取資料轉成標準回傳格式。"""
+
+    visual_context = cache_data.get(
+        "visual_context",
+        [],
+    )
+
+    visual_cached = bool(
+        cache_data.get(
+            "visual_analysis_completed",
+            False,
+        )
+    )
+
+    chapter_note = None
+    note_cached = False
+    note_cache_valid = False
+    note_cache_invalid_reason = (
+        "沒有詳細筆記快取"
+    )
+
+    raw_note = cache_data.get(
+        "chapter_note"
+    )
+
+    chapter_note_completed = bool(
+        cache_data.get(
+            "chapter_note_completed",
+            bool(raw_note),
+        )
+    )
+
+    if chapter_note_completed and raw_note:
+        try:
+            chapter_note = (
+                ChapterLearningNote.model_validate(
+                    raw_note
+                )
+            )
+
+            note_cached = True
+
+            (
+                note_cache_valid,
+                note_cache_invalid_reason,
+            ) = is_valid_chapter_note(
+                chapter_note
+            )
+
+        except Exception as error:
+            chapter_note = None
+            note_cached = True
+            note_cache_valid = False
+            note_cache_invalid_reason = (
+                "詳細筆記快取格式錯誤："
+                f"{error}"
+            )
+
+    return {
+        "visual_context": (
+            visual_context
+            if isinstance(
+                visual_context,
+                list,
+            )
+            else []
+        ),
+        "visual_cached": visual_cached,
+        "chapter_note": chapter_note,
+        "note_cached": note_cached,
+        "note_cache_valid": (
+            note_cache_valid
+        ),
+        "note_cache_invalid_reason": (
+            note_cache_invalid_reason
+        ),
+        "cache_path": cache_path,
+    }
+
+
 def load_chapter_cache(
     document_name: str,
     chapter: dict,
@@ -239,64 +534,69 @@ def load_chapter_cache(
     """
     讀取單一章節快取。
 
-    回傳：
-    - visual_context
-    - visual_cached
-    - chapter_note
-    - note_cached
-    - note_cache_valid
-    - note_cache_invalid_reason
-    - cache_path
+    尋找順序：
+    1. 使用目前章節完整資料產生精準快取路徑
+    2. 若精準路徑不存在或沒有詳細筆記，掃描文件快取資料夾
+    3. 依 chapter_id、source_chapter_id、chapter_order、標題比對
+    4. 支援舊版快取缺少 chapter_note_completed 的情況
     """
 
-    cache_path = _get_chapter_cache_path(
+    exact_path = _get_chapter_cache_path(
         document_name=document_name,
         chapter=chapter,
     )
 
-    cache_data = _read_cache_file(cache_path)
-
-    visual_context = cache_data.get("visual_context", [])
-    visual_cached = bool(
-        cache_data.get("visual_analysis_completed", False)
+    exact_data = _read_raw_cache_file(
+        exact_path
     )
 
-    chapter_note = None
-    note_cached = False
-    note_cache_valid = False
-    note_cache_invalid_reason = "沒有詳細筆記快取"
+    if exact_data:
+        exact_result = _parse_cache_data(
+            cache_data=exact_data,
+            cache_path=exact_path,
+        )
 
-    if cache_data.get("chapter_note_completed"):
-        raw_note = cache_data.get("chapter_note")
+        if (
+            exact_result.get("note_cached")
+            or exact_result.get(
+                "visual_cached"
+            )
+        ):
+            return exact_result
 
-        if raw_note:
-            try:
-                chapter_note = ChapterLearningNote.model_validate(raw_note)
-                note_cached = True
+    fallback_path = (
+        _find_chapter_cache_fallback(
+            document_name=document_name,
+            chapter=chapter,
+        )
+    )
 
-                note_cache_valid, note_cache_invalid_reason = (
-                    is_valid_chapter_note(chapter_note)
-                )
+    if (
+        fallback_path is not None
+        and fallback_path != exact_path
+    ):
+        fallback_data = _read_raw_cache_file(
+            fallback_path
+        )
 
-            except Exception as error:
-                chapter_note = None
-                note_cached = True
-                note_cache_valid = False
-                note_cache_invalid_reason = (
-                    f"詳細筆記快取格式錯誤：{error}"
-                )
+        if fallback_data:
+            return _parse_cache_data(
+                cache_data=fallback_data,
+                cache_path=fallback_path,
+            )
 
-    return {
-        "visual_context": visual_context
-        if isinstance(visual_context, list)
-        else [],
-        "visual_cached": visual_cached,
-        "chapter_note": chapter_note,
-        "note_cached": note_cached,
-        "note_cache_valid": note_cache_valid,
-        "note_cache_invalid_reason": note_cache_invalid_reason,
-        "cache_path": cache_path,
-    }
+    if exact_data:
+        return _parse_cache_data(
+            cache_data=exact_data,
+            cache_path=exact_path,
+        )
+
+    empty_data = _empty_cache_state()
+
+    return _parse_cache_data(
+        cache_data=empty_data,
+        cache_path=exact_path,
+    )
 
 
 def save_visual_context_cache(
