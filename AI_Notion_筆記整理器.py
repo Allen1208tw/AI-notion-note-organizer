@@ -4,6 +4,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 
 from src.config.settings import OPENAI_MODEL, SUPPORTED_FILE_TYPES
+from src.database.init_db import initialize_database
 from src.exporters.json_exporter import build_json
 from src.exporters.markdown_builder import build_markdown
 from src.parsers.docx_parser import parse_docx_file
@@ -43,6 +44,16 @@ st.set_page_config(
     page_icon="📝",
     layout="wide",
 )
+
+schema_issues = initialize_database()
+
+if schema_issues:
+    st.error(
+        "SQLite 資料庫版本與目前程式不一致。請先備份 outputs 資料夾，"
+        "再依資料管理說明執行資料庫升級。\n\n"
+        + "\n".join(f"- {issue}" for issue in schema_issues)
+    )
+    st.stop()
 
 
 def inject_full_text_css() -> None:
@@ -107,17 +118,6 @@ def inject_full_text_css() -> None:
         a,
         a div,
         a p {
-            white-space: normal !important;
-            overflow: visible !important;
-            text-overflow: clip !important;
-            overflow-wrap: anywhere !important;
-            word-break: break-word !important;
-            height: auto !important;
-        }
-
-        div[data-baseweb="select"] span,
-        div[data-baseweb="select"] div,
-        li[role="option"] {
             white-space: normal !important;
             overflow: visible !important;
             text-overflow: clip !important;
@@ -567,7 +567,7 @@ def show_chapter_learning_note(chapter_note) -> None:
                     st.image(
                         image_data_url,
                         caption=f"PDF 第 {page_number} 頁",
-                        use_container_width=True,
+                        width="stretch",
                     )
                 else:
                     st.caption(
@@ -2551,7 +2551,7 @@ if "parsed_document" in st.session_state:
     with sync_col:
         if st.button(
             "從快取同步練習題",
-            use_container_width=True,
+            width="stretch",
         ):
             current_document_id = (
                 st.session_state.get(

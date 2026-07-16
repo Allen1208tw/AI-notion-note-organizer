@@ -65,19 +65,6 @@ def inject_full_text_css() -> None:
             height: auto !important;
         }
 
-        div[data-baseweb="select"] span,
-        div[data-baseweb="select"] div,
-        div[data-baseweb="popover"] span,
-        div[data-baseweb="popover"] div,
-        li[role="option"] {
-            white-space: normal !important;
-            overflow: visible !important;
-            text-overflow: clip !important;
-            overflow-wrap: anywhere !important;
-            word-break: break-word !important;
-            height: auto !important;
-        }
-
         button,
         button div,
         button p,
@@ -220,6 +207,9 @@ def build_document_options(
                 f"{file_name}（更新："
                 f"{format_datetime(document.get('updated_at'))}）"
             )
+
+        if label in options:
+            label = f"{label}｜{safe_text(document.get('id'))[:8]}"
 
         options[label] = safe_text(
             document.get("id")
@@ -394,7 +384,7 @@ def show_quiz_section(
         chart_data,
         x="自評結果",
         y="次數",
-        use_container_width=True,
+        width="stretch",
     )
 
 
@@ -474,7 +464,7 @@ def show_flashcard_section(
         familiarity_data,
         x="熟悉度",
         y="次數",
-        use_container_width=True,
+        width="stretch",
     )
 
 
@@ -776,29 +766,18 @@ document_options = build_document_options(
     documents
 )
 
-selected_document_label = st.selectbox(
+document_labels = list(document_options.keys())
+
+selected_document_index = st.selectbox(
     "選擇文件",
-    options=list(
-        document_options.keys()
-    ),
+    options=list(range(len(documents))),
+    format_func=lambda index: document_labels[index],
+    key="dashboard_document_selector",
 )
 
-selected_document_id = (
-    document_options[
-        selected_document_label
-    ]
-)
-
-selected_document = next(
-    (
-        item
-        for item in documents
-        if safe_text(
-            item.get("id")
-        )
-        == selected_document_id
-    ),
-    {},
+selected_document = documents[selected_document_index]
+selected_document_id = safe_text(
+    selected_document.get("id")
 )
 
 try:

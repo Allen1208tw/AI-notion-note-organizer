@@ -43,38 +43,6 @@ def inject_full_text_css() -> None:
             word-break: break-word !important;
         }
 
-        /* Selectbox 顯示文字 */
-        div[data-baseweb="select"] span,
-        div[data-baseweb="select"] div,
-        div[data-baseweb="popover"] span,
-        div[data-baseweb="popover"] div {
-            white-space: normal !important;
-            overflow: visible !important;
-            text-overflow: clip !important;
-            overflow-wrap: anywhere !important;
-            word-break: break-word !important;
-            line-height: 1.4 !important;
-        }
-
-        /* Selectbox 高度允許變高 */
-        div[data-baseweb="select"] > div {
-            min-height: auto !important;
-            height: auto !important;
-            align-items: flex-start !important;
-        }
-
-        /* Selectbox 下拉選項允許換行 */
-        li[role="option"] {
-            white-space: normal !important;
-            overflow: visible !important;
-            text-overflow: clip !important;
-            height: auto !important;
-            min-height: 40px !important;
-            align-items: flex-start !important;
-            padding-top: 10px !important;
-            padding-bottom: 10px !important;
-        }
-
         /* Metric 不要截斷 */
         div[data-testid="stMetric"],
         div[data-testid="stMetric"] label,
@@ -312,6 +280,9 @@ def build_document_options(documents) -> dict:
         if label in document_options:
             label = f"{file_name}（更新時間：{updated_at}）"
 
+        if label in document_options:
+            label = f"{label}｜{str(document.id)[:8]}"
+
         document_options[label] = document.id
 
     return document_options
@@ -431,14 +402,16 @@ if not documents:
     st.info("目前 SQLite 中還沒有任何文件紀錄。")
     st.stop()
 
-document_options = build_document_options(documents)
+document_labels = list(build_document_options(documents).keys())
 
-selected_document_label = st.selectbox(
+selected_document_index = st.selectbox(
     "選擇文件",
-    options=list(document_options.keys()),
+    options=list(range(len(documents))),
+    format_func=lambda index: document_labels[index],
+    key="document_management_selector",
 )
 
-selected_document_id = document_options[selected_document_label]
+selected_document_id = documents[selected_document_index].id
 
 document = get_document_with_chapters(selected_document_id)
 

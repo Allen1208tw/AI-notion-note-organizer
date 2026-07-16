@@ -200,6 +200,9 @@ def build_document_options(
                 f"{format_datetime(document.get('updated_at'))}）"
             )
 
+        if label in options:
+            label = f"{label}｜{safe_text(document.get('id'))[:8]}"
+
         options[label] = safe_text(
             document.get("id")
         )
@@ -548,7 +551,7 @@ def show_flashcard_review(
             "翻面查看答案",
             key=f"{state_prefix}_reveal_{current_id}",
             type="primary",
-            use_container_width=True,
+            width="stretch",
         ):
             st.session_state[
                 show_back_key
@@ -591,7 +594,7 @@ def show_flashcard_review(
                 f"{state_prefix}_score_0_"
                 f"{current_id}"
             ),
-            use_container_width=True,
+            width="stretch",
         ):
             score_clicked = 0
 
@@ -602,7 +605,7 @@ def show_flashcard_review(
                 f"{state_prefix}_score_1_"
                 f"{current_id}"
             ),
-            use_container_width=True,
+            width="stretch",
         ):
             score_clicked = 1
 
@@ -613,7 +616,7 @@ def show_flashcard_review(
                 f"{state_prefix}_score_2_"
                 f"{current_id}"
             ),
-            use_container_width=True,
+            width="stretch",
         ):
             score_clicked = 2
 
@@ -624,7 +627,7 @@ def show_flashcard_review(
                 f"{state_prefix}_score_3_"
                 f"{current_id}"
             ),
-            use_container_width=True,
+            width="stretch",
         ):
             score_clicked = 3
 
@@ -635,7 +638,7 @@ def show_flashcard_review(
                 f"{state_prefix}_score_4_"
                 f"{current_id}"
             ),
-            use_container_width=True,
+            width="stretch",
         ):
             score_clicked = 4
 
@@ -646,7 +649,7 @@ def show_flashcard_review(
                 f"{state_prefix}_score_5_"
                 f"{current_id}"
             ),
-            use_container_width=True,
+            width="stretch",
             type="primary",
         ):
             score_clicked = 5
@@ -859,13 +862,7 @@ if not documents:
     )
     st.stop()
 
-document_labels = [
-    safe_text(
-        document.get("file_name"),
-        "未命名文件",
-    )
-    for document in documents
-]
+document_labels = list(build_document_options(documents).keys())
 
 selected_document_index = st.selectbox(
     "選擇文件",
@@ -1038,4 +1035,3 @@ with tab_history:
         st.error(
             f"載入複習紀錄失敗：{error}"
         )
-

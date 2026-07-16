@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 from sqlalchemy import (
@@ -28,7 +28,7 @@ def create_uuid() -> str:
 def utc_now() -> datetime:
     """取得目前 UTC 時間。"""
 
-    return datetime.utcnow()
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 class Document(Base):

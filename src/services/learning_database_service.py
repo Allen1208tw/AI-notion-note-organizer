@@ -20,6 +20,14 @@ from src.database.models import (
     Quiz,
     QuizAttempt,
     ReviewSchedule,
+    WeakPoint,
+    utc_now,
+)
+from src.services.learning_item_identity import (
+    flashcard_identity,
+    prepare_unique_flashcards,
+    prepare_unique_quizzes,
+    quiz_identity,
 )
 
 
@@ -180,6 +188,63 @@ def get_document_by_file_hash(file_hash: str) -> Optional[Document]:
         return session.execute(statement).scalars().first()
 
 
+def _delete_chapter_learning_records(
+    session,
+    chapter_ids: list[str],
+) -> None:
+    """Delete learning records belonging to chapters removed by re-analysis."""
+
+    if not chapter_ids:
+        return
+
+    quiz_ids = [
+        row[0]
+        for row in session.query(Quiz.id)
+        .filter(Quiz.chapter_id.in_(chapter_ids))
+        .all()
+    ]
+    flashcard_ids = [
+        row[0]
+        for row in session.query(Flashcard.id)
+        .filter(Flashcard.chapter_id.in_(chapter_ids))
+        .all()
+    ]
+
+    if quiz_ids:
+        session.query(QuizAttempt).filter(
+            QuizAttempt.quiz_id.in_(quiz_ids)
+        ).delete(synchronize_session=False)
+        session.query(WeakPoint).filter(
+            WeakPoint.quiz_id.in_(quiz_ids)
+        ).delete(synchronize_session=False)
+        session.query(ReviewSchedule).filter(
+            ReviewSchedule.item_type == "quiz",
+            ReviewSchedule.item_id.in_(quiz_ids),
+        ).delete(synchronize_session=False)
+
+    if flashcard_ids:
+        session.query(FlashcardReview).filter(
+            FlashcardReview.flashcard_id.in_(flashcard_ids)
+        ).delete(synchronize_session=False)
+        session.query(ReviewSchedule).filter(
+            ReviewSchedule.item_type == "flashcard",
+            ReviewSchedule.item_id.in_(flashcard_ids),
+        ).delete(synchronize_session=False)
+
+    session.query(WeakPoint).filter(
+        WeakPoint.chapter_id.in_(chapter_ids)
+    ).delete(synchronize_session=False)
+    session.query(Quiz).filter(Quiz.chapter_id.in_(chapter_ids)).delete(
+        synchronize_session=False
+    )
+    session.query(Flashcard).filter(
+        Flashcard.chapter_id.in_(chapter_ids)
+    ).delete(synchronize_session=False)
+    session.query(Chapter).filter(Chapter.id.in_(chapter_ids)).delete(
+        synchronize_session=False
+    )
+
+
 def create_or_update_document(
     file_name: str,
     file_extension: str,
@@ -188,103 +253,124 @@ def create_or_update_document(
     metadata: dict,
     chapters: list[dict],
 ) -> Document:
-    """建立或更新文件與章節資料。"""
+    """Create or update a document while preserving matching chapter history."""
 
     with get_database_session() as session:
-        statement = select(Document).where(Document.file_hash == file_hash)
-        document = session.execute(statement).scalars().first()
+        try:
+            normalized_chapters: list[tuple[str, dict]] = []
+            seen_source_ids: set[str] = set()
 
-        now = datetime.utcnow()
+            for index, chapter in enumerate(chapters or [], start=1):
+                source_id = str(
+                    chapter.get("chapter_id")
+                    or chapter.get("source_chapter_id")
+                    or index
+                ).strip()
 
-        if document is None:
+                if source_id in seen_source_ids:
+                    raise ValueError(
+                        "章節來源 ID 重複，無法安全寫入資料庫："
+                        f"{source_id}"
+                    )
+
+                seen_source_ids.add(source_id)
+                normalized_chapters.append((source_id, chapter))
+
+            statement = select(Document).where(Document.file_hash == file_hash)
+            document = session.execute(statement).scalars().first()
+            now = utc_now()
+
             document_data = {
                 "file_name": file_name,
                 "file_extension": file_extension,
-                "file_size_bytes": file_size_bytes,
+                "file_size_bytes": int(file_size_bytes or 0),
                 "file_hash": file_hash,
-                "page_count": metadata.get("page_count"),
-                "character_count": metadata.get("character_count", 0),
-                "paragraph_count": metadata.get("paragraph_count", 0),
+                "page_count": int(metadata.get("page_count") or 0),
+                "character_count": int(metadata.get("character_count") or 0),
+                "paragraph_count": int(metadata.get("paragraph_count") or 0),
+                "chapter_count": len(normalized_chapters),
                 "status": "analyzed",
                 "export_status": "pending",
-                "created_at": now,
                 "updated_at": now,
             }
 
-            document_data = _maybe_add_id(Document, document_data)
-
-            document = Document(
-                **_filter_model_kwargs(
-                    Document,
-                    document_data,
+            if document is None:
+                document_data["created_at"] = now
+                document_data = _maybe_add_id(Document, document_data)
+                document = Document(
+                    **_filter_model_kwargs(Document, document_data)
                 )
-            )
+                session.add(document)
+                session.flush()
+                existing_by_source: dict[str, Chapter] = {}
+            else:
+                for name, value in document_data.items():
+                    _safe_setattr(document, name, value)
+                _safe_setattr(document, "notion_parent_page_id", None)
+                _safe_setattr(document, "notion_parent_url", None)
 
-            session.add(document)
-            session.flush()
-
-        else:
-            _safe_setattr(document, "file_name", file_name)
-            _safe_setattr(document, "file_extension", file_extension)
-            _safe_setattr(document, "file_size_bytes", file_size_bytes)
-            _safe_setattr(document, "page_count", metadata.get("page_count"))
-            _safe_setattr(
-                document,
-                "character_count",
-                metadata.get("character_count", 0),
-            )
-            _safe_setattr(
-                document,
-                "paragraph_count",
-                metadata.get("paragraph_count", 0),
-            )
-            _safe_setattr(document, "status", "analyzed")
-            _safe_setattr(document, "updated_at", now)
-
-            session.query(Chapter).filter(
-                Chapter.document_id == document.id
-            ).delete(synchronize_session=False)
-
-            session.flush()
-
-        for index, chapter in enumerate(chapters, start=1):
-            source_chapter_id = str(chapter.get("chapter_id") or index)
-            chapter_content = chapter.get("content", "") or ""
-
-            chapter_data = {
-                "document_id": document.id,
-                "source_chapter_id": source_chapter_id,
-                "chapter_order": index,
-                "title": chapter.get("title", f"Module {index}"),
-                "source": chapter.get("source", ""),
-                "start_index": chapter.get("start_index"),
-                "end_index": chapter.get("end_index"),
-                "character_count": len(chapter_content),
-                "subsection_count": len(chapter.get("subsections", [])),
-                "export_status": "pending",
-                "visual_cache_status": "pending",
-                "note_cache_status": "pending",
-                "notion_page_id": None,
-                "notion_page_url": None,
-                "created_at": now,
-                "updated_at": now,
-            }
-
-            chapter_data = _maybe_add_id(Chapter, chapter_data)
-
-            chapter_record = Chapter(
-                **_filter_model_kwargs(
-                    Chapter,
-                    chapter_data,
+                existing_chapters = (
+                    session.query(Chapter)
+                    .filter(Chapter.document_id == document.id)
+                    .all()
                 )
-            )
+                existing_by_source = {
+                    str(item.source_chapter_id): item
+                    for item in existing_chapters
+                }
 
-            session.add(chapter_record)
+                # Avoid transient unique conflicts while chapter order changes.
+                for offset, item in enumerate(existing_chapters, start=1):
+                    item.chapter_order = -offset
+                session.flush()
 
-        session.commit()
-        session.refresh(document)
+                removed_ids = [
+                    item.id
+                    for source_id, item in existing_by_source.items()
+                    if source_id not in seen_source_ids
+                ]
+                _delete_chapter_learning_records(session, removed_ids)
 
-        return document
+            for index, (source_id, chapter) in enumerate(
+                normalized_chapters,
+                start=1,
+            ):
+                content = str(chapter.get("content") or "")
+                chapter_data = {
+                    "document_id": document.id,
+                    "source_chapter_id": source_id,
+                    "chapter_order": index,
+                    "title": str(chapter.get("title") or f"Module {source_id}"),
+                    "source": chapter.get("source") or "",
+                    "start_index": chapter.get("start_index"),
+                    "end_index": chapter.get("end_index"),
+                    "character_count": len(content),
+                    "subsection_count": len(chapter.get("subsections") or []),
+                    "export_status": "pending",
+                    "visual_cache_status": "pending",
+                    "note_cache_status": "pending",
+                    "notion_page_id": None,
+                    "notion_page_url": None,
+                    "updated_at": now,
+                }
+                chapter_record = existing_by_source.get(source_id)
+
+                if chapter_record is None:
+                    chapter_data["created_at"] = now
+                    chapter_data = _maybe_add_id(Chapter, chapter_data)
+                    session.add(
+                        Chapter(**_filter_model_kwargs(Chapter, chapter_data))
+                    )
+                else:
+                    for name, value in chapter_data.items():
+                        _safe_setattr(chapter_record, name, value)
+
+            session.commit()
+            session.refresh(document)
+            return document
+        except Exception:
+            session.rollback()
+            raise
 
 
 def list_documents() -> list[Document]:
@@ -333,7 +419,7 @@ def mark_document_exporting(document_id: int | str) -> None:
             return
 
         _safe_setattr(document, "export_status", "exporting")
-        _safe_setattr(document, "updated_at", datetime.utcnow())
+        _safe_setattr(document, "updated_at", utc_now())
 
         session.commit()
 
@@ -416,7 +502,7 @@ def update_document_export_result(
                     "notion_page_url",
                     item.get("notion_page_url"),
                 )
-                _safe_setattr(chapter, "updated_at", datetime.utcnow())
+                _safe_setattr(chapter, "updated_at", utc_now())
 
         for item in failed_chapters:
             chapter = _find_chapter_record(
@@ -427,7 +513,7 @@ def update_document_export_result(
 
             if chapter:
                 _safe_setattr(chapter, "export_status", "failed")
-                _safe_setattr(chapter, "updated_at", datetime.utcnow())
+                _safe_setattr(chapter, "updated_at", utc_now())
 
         all_chapters = (
             session.query(Chapter)
@@ -450,7 +536,7 @@ def update_document_export_result(
         else:
             _safe_setattr(document, "export_status", "pending")
 
-        _safe_setattr(document, "updated_at", datetime.utcnow())
+        _safe_setattr(document, "updated_at", utc_now())
 
         session.commit()
 
@@ -460,135 +546,157 @@ def save_chapter_learning_items(
     source_chapter_id: str,
     chapter_note,
 ) -> dict:
-    """將章節詳細筆記中的 Quiz / Flash Cards 寫入 SQLite。"""
+    """Safely merge one chapter's Quiz and Flash Cards into SQLite."""
 
     with get_database_session() as session:
-        chapter = _find_chapter_record(
-            session=session,
-            document_id=document_id,
-            source_chapter_id=str(source_chapter_id),
-        )
+        try:
+            chapter = _find_chapter_record(
+                session=session,
+                document_id=document_id,
+                source_chapter_id=str(source_chapter_id),
+            )
 
-        if chapter is None:
+            if chapter is None:
+                return {
+                    "saved": False,
+                    "reason": "找不到對應章節",
+                    "quiz_count": 0,
+                    "flashcard_count": 0,
+                    "added_quiz_count": 0,
+                    "added_flashcard_count": 0,
+                    "skipped_quiz_count": 0,
+                    "skipped_flashcard_count": 0,
+                }
+
+            prepared_quizzes, skipped_quiz_count = prepare_unique_quizzes(
+                chapter_note
+            )
+            prepared_flashcards, skipped_flashcard_count = (
+                prepare_unique_flashcards(chapter_note)
+            )
+
+            existing_quizzes = (
+                session.query(Quiz)
+                .filter(
+                    Quiz.document_id == document_id,
+                    Quiz.chapter_id == chapter.id,
+                )
+                .all()
+            )
+            existing_quiz_keys = {
+                quiz_identity(quiz.question, quiz.correct_answer)
+                for quiz in existing_quizzes
+            }
+
+            existing_flashcards = (
+                session.query(Flashcard)
+                .filter(
+                    Flashcard.document_id == document_id,
+                    Flashcard.chapter_id == chapter.id,
+                )
+                .all()
+            )
+            existing_flashcard_keys = {
+                flashcard_identity(card.front, card.back)
+                for card in existing_flashcards
+            }
+
+            now = utc_now()
+            added_quiz_count = 0
+            added_flashcard_count = 0
+
+            for item in prepared_quizzes:
+                if item["identity"] in existing_quiz_keys:
+                    skipped_quiz_count += 1
+                    continue
+
+                quiz_data = _maybe_add_id(
+                    Quiz,
+                    {
+                        "document_id": document_id,
+                        "chapter_id": chapter.id,
+                        "question": item["question"],
+                        "correct_answer": item["answer"],
+                        "explanation": item["explanation"] or None,
+                        "difficulty": item["difficulty"],
+                        "created_at": now,
+                        "updated_at": now,
+                    },
+                )
+                session.add(Quiz(**_filter_model_kwargs(Quiz, quiz_data)))
+                existing_quiz_keys.add(item["identity"])
+                added_quiz_count += 1
+
+            for item in prepared_flashcards:
+                if item["identity"] in existing_flashcard_keys:
+                    skipped_flashcard_count += 1
+                    continue
+
+                flashcard_data = _maybe_add_id(
+                    Flashcard,
+                    {
+                        "document_id": document_id,
+                        "chapter_id": chapter.id,
+                        "front": item["front"],
+                        "back": item["back"],
+                        "created_at": now,
+                        "updated_at": now,
+                    },
+                )
+                session.add(
+                    Flashcard(
+                        **_filter_model_kwargs(Flashcard, flashcard_data)
+                    )
+                )
+                existing_flashcard_keys.add(item["identity"])
+                added_flashcard_count += 1
+
+            _safe_setattr(chapter, "note_cache_status", "completed")
+            _safe_setattr(chapter, "updated_at", now)
+            session.flush()
+
+            total_quiz_count = (
+                session.query(func.count(Quiz.id))
+                .filter(
+                    Quiz.document_id == document_id,
+                    Quiz.chapter_id == chapter.id,
+                )
+                .scalar()
+                or 0
+            )
+            total_flashcard_count = (
+                session.query(func.count(Flashcard.id))
+                .filter(
+                    Flashcard.document_id == document_id,
+                    Flashcard.chapter_id == chapter.id,
+                )
+                .scalar()
+                or 0
+            )
+            session.commit()
+
+            return {
+                "saved": True,
+                "reason": "",
+                "quiz_count": int(total_quiz_count),
+                "flashcard_count": int(total_flashcard_count),
+                "added_quiz_count": added_quiz_count,
+                "added_flashcard_count": added_flashcard_count,
+                "skipped_quiz_count": skipped_quiz_count,
+                "skipped_flashcard_count": skipped_flashcard_count,
+            }
+        except Exception as error:
+            session.rollback()
             return {
                 "saved": False,
-                "reason": "找不到對應章節",
+                "reason": f"SQLite 章節學習資料寫入失敗：{error}",
                 "quiz_count": 0,
                 "flashcard_count": 0,
+                "added_quiz_count": 0,
+                "added_flashcard_count": 0,
+                "skipped_quiz_count": 0,
+                "skipped_flashcard_count": 0,
             }
-
-        old_quizzes = (
-            session.query(Quiz)
-            .filter(
-                Quiz.document_id == document_id,
-                Quiz.chapter_id == chapter.id,
-            )
-            .all()
-        )
-
-        old_quiz_ids = [quiz.id for quiz in old_quizzes]
-
-        if old_quiz_ids:
-            session.query(QuizAttempt).filter(
-                QuizAttempt.quiz_id.in_(old_quiz_ids)
-            ).delete(synchronize_session=False)
-
-        session.query(Quiz).filter(
-            Quiz.document_id == document_id,
-            Quiz.chapter_id == chapter.id,
-        ).delete(synchronize_session=False)
-
-        old_flashcards = (
-            session.query(Flashcard)
-            .filter(
-                Flashcard.document_id == document_id,
-                Flashcard.chapter_id == chapter.id,
-            )
-            .all()
-        )
-
-        old_flashcard_ids = [
-            flashcard.id for flashcard in old_flashcards
-        ]
-
-        if old_flashcard_ids:
-            session.query(FlashcardReview).filter(
-                FlashcardReview.flashcard_id.in_(old_flashcard_ids)
-            ).delete(synchronize_session=False)
-
-            session.query(ReviewSchedule).filter(
-                (
-                    ReviewSchedule.item_type == "flashcard"
-                )
-                & ReviewSchedule.item_id.in_(old_flashcard_ids)
-            ).delete(synchronize_session=False)
-
-        session.query(Flashcard).filter(
-            Flashcard.document_id == document_id,
-            Flashcard.chapter_id == chapter.id,
-        ).delete(synchronize_session=False)
-
-        quiz_count = 0
-        flashcard_count = 0
-
-        for quiz_item in getattr(chapter_note, "quiz", []):
-            quiz_data = {
-                "document_id": document_id,
-                "chapter_id": chapter.id,
-                "question": getattr(quiz_item, "question", ""),
-                "correct_answer": getattr(quiz_item, "answer", ""),
-                "answer": getattr(quiz_item, "answer", ""),
-                "explanation": getattr(quiz_item, "explanation", ""),
-                "difficulty": "medium",
-                "created_at": datetime.utcnow(),
-                "updated_at": datetime.utcnow(),
-            }
-
-            quiz_data = _maybe_add_id(Quiz, quiz_data)
-
-            quiz = Quiz(
-                **_filter_model_kwargs(
-                    Quiz,
-                    quiz_data,
-                )
-            )
-
-            session.add(quiz)
-            quiz_count += 1
-
-        for flashcard_item in getattr(chapter_note, "flashcards", []):
-            flashcard_data = {
-                "document_id": document_id,
-                "chapter_id": chapter.id,
-                "front": getattr(flashcard_item, "front", ""),
-                "back": getattr(flashcard_item, "back", ""),
-                "created_at": datetime.utcnow(),
-                "updated_at": datetime.utcnow(),
-            }
-
-            flashcard_data = _maybe_add_id(Flashcard, flashcard_data)
-
-            flashcard = Flashcard(
-                **_filter_model_kwargs(
-                    Flashcard,
-                    flashcard_data,
-                )
-            )
-
-            session.add(flashcard)
-            flashcard_count += 1
-
-        _safe_setattr(chapter, "note_cache_status", "completed")
-        _safe_setattr(chapter, "updated_at", datetime.utcnow())
-
-        session.commit()
-
-        return {
-            "saved": True,
-            "reason": "",
-            "quiz_count": quiz_count,
-            "flashcard_count": flashcard_count,
-        }
 
 
 def count_chapter_learning_items(

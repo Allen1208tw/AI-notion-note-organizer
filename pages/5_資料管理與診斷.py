@@ -6,6 +6,7 @@ import pandas as pd
 import streamlit as st
 
 from src.services.learning_data_admin_service import (
+    deduplicate_document_learning_items,
     delete_document_learning_data,
     delete_single_chapter_learning_data,
     get_all_learning_documents,
@@ -353,6 +354,18 @@ def show_diagnostic_summary(
         ),
     )
 
+    col5, col6 = st.columns(2)
+
+    col5.metric(
+        "重複 Quiz",
+        safe_int(summary.get("duplicate_quiz_count")),
+    )
+
+    col6.metric(
+        "重複 Flash Cards",
+        safe_int(summary.get("duplicate_flashcard_count")),
+    )
+
 
 def show_diagnostic_warnings(
     warnings: list[str],
@@ -419,7 +432,7 @@ def show_chapter_distribution(
 
     st.dataframe(
         dataframe,
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
     )
 
@@ -438,8 +451,63 @@ def show_chapter_distribution(
 
         st.bar_chart(
             chart_data,
-            use_container_width=True,
+            width="stretch",
         )
+
+
+def show_duplicate_cleanup(
+    document_id: str,
+) -> None:
+    """Preview and safely merge duplicate Quiz and Flash Cards."""
+
+    try:
+        preview = deduplicate_document_learning_items(
+            document_id=document_id,
+            preview_only=True,
+        )
+    except Exception as error:
+        st.error(f"讀取重複資料失敗：{error}")
+        return
+
+    duplicate_quizzes = safe_int(preview.get("duplicate_quiz_count"))
+    duplicate_flashcards = safe_int(
+        preview.get("duplicate_flashcard_count")
+    )
+
+    if duplicate_quizzes == 0 and duplicate_flashcards == 0:
+        st.success("目前沒有重複的 Quiz 或 Flash Cards。")
+        return
+
+    metric_col1, metric_col2 = st.columns(2)
+    metric_col1.metric("可合併的重複 Quiz", duplicate_quizzes)
+    metric_col2.metric("可合併的重複 Flash Cards", duplicate_flashcards)
+
+    st.info(
+        "整理時會保留一份原始題目或卡片，並把作答紀錄、"
+        "複習紀錄、弱點與排程移到保留項目，不會重新呼叫 AI。"
+    )
+
+    confirm_text = st.text_input(
+        "輸入 MERGE DUPLICATES 進行確認",
+        key=f"confirm_merge_duplicates_{document_id}",
+    )
+
+    if st.button(
+        "安全合併重複資料",
+        key=f"merge_duplicates_{document_id}",
+        type="primary",
+        disabled=confirm_text.strip() != "MERGE DUPLICATES",
+        width="stretch",
+    ):
+        try:
+            result = deduplicate_document_learning_items(
+                document_id=document_id,
+                preview_only=False,
+            )
+            st.session_state["deduplicate_success"] = result
+            st.rerun()
+        except Exception as error:
+            st.error(f"合併重複資料失敗：{error}")
 
 
 def show_single_chapter_cleanup(
@@ -512,7 +580,7 @@ def show_single_chapter_cleanup(
         ),
         type="primary",
         disabled=not delete_enabled,
-        use_container_width=True,
+        width="stretch",
     ):
         try:
             result = (
@@ -612,11 +680,6 @@ def show_single_chapter_resync(
         )
     )
 
-    can_sync = (
-        quiz_count == 0
-        and flashcard_count == 0
-    )
-
     st.markdown(
         (
             "**快取定位資訊**  \n"
@@ -627,18 +690,16 @@ def show_single_chapter_resync(
         )
     )
 
-    if can_sync:
+    if quiz_count == 0 and flashcard_count == 0:
         st.info(
             "該章目前沒有 Quiz 與 Flash Cards，"
             "可以安全地從詳細筆記快取重新同步。"
             "這個操作不會呼叫 AI，也不會修改 Notion。"
         )
     else:
-        st.warning(
-            "該章目前仍有 Quiz 或 Flash Cards。"
-            "為避免覆蓋既有作答與複習紀錄，"
-            "請先使用下方的「單一章節清除」，"
-            "清除完成後再回到此處同步。"
+        st.info(
+            "該章已有學習資料；同步時會保留作答與複習紀錄，"
+            "略過重複內容，只補上快取中缺少的 Quiz 或 Flash Cards。"
         )
 
     if st.button(
@@ -649,8 +710,7 @@ def show_single_chapter_resync(
             f"{source_chapter_id}"
         ),
         type="primary",
-        disabled=not can_sync,
-        use_container_width=True,
+        width="stretch",
     ):
         try:
             result = (
@@ -687,6 +747,18 @@ def show_single_chapter_resync(
                                 "flashcard_count"
                             )
                         )
+                    ),
+                    "added_quiz_count": safe_int(
+                        result.get("added_quiz_count")
+                    ),
+                    "added_flashcard_count": safe_int(
+                        result.get("added_flashcard_count")
+                    ),
+                    "skipped_quiz_count": safe_int(
+                        result.get("skipped_quiz_count")
+                    ),
+                    "skipped_flashcard_count": safe_int(
+                        result.get("skipped_flashcard_count")
                     ),
                 }
 
@@ -772,7 +844,7 @@ def show_document_cleanup(
         ),
         type="primary",
         disabled=not delete_enabled,
-        use_container_width=True,
+        width="stretch",
     ):
         try:
             result = delete_document_learning_data(
@@ -800,6 +872,42 @@ def show_document_cleanup(
                 f"清除文件資料失敗：{error}"
             )
 
+
+
+def show_deduplicate_success_dialog() -> None:
+    """Show the result after duplicate learning items are merged."""
+
+    result = st.session_state.get("deduplicate_success")
+
+    if not result:
+        return
+
+    @st.dialog("重複資料整理完成")
+    def _dialog() -> None:
+        st.success("重複資料已安全合併，相關學習紀錄已保留。")
+        col1, col2 = st.columns(2)
+        col1.metric(
+            "已合併 Quiz",
+            safe_int(result.get("merged_quiz_count")),
+        )
+        col2.metric(
+            "已合併 Flash Cards",
+            safe_int(result.get("merged_flashcard_count")),
+        )
+        st.caption(
+            "作答、複習、弱點與排程已重新連到保留的項目。"
+        )
+
+        if st.button(
+            "關閉",
+            key="close_deduplicate_dialog",
+            type="primary",
+            width="stretch",
+        ):
+            st.session_state.pop("deduplicate_success", None)
+            st.rerun()
+
+    _dialog()
 
 
 def show_resync_success_dialog() -> None:
@@ -844,6 +952,16 @@ def show_resync_success_dialog() -> None:
             ),
         )
 
+        added_col1, added_col2 = st.columns(2)
+        added_col1.metric(
+            "本次新增 Quiz",
+            safe_int(result.get("added_quiz_count")),
+        )
+        added_col2.metric(
+            "本次新增 Flash Cards",
+            safe_int(result.get("added_flashcard_count")),
+        )
+
         st.caption(
             "這次同步只讀取既有快取，"
             "沒有重新呼叫 AI，也沒有修改 Notion。"
@@ -853,7 +971,7 @@ def show_resync_success_dialog() -> None:
             "關閉",
             key="close_chapter_resync_dialog",
             type="primary",
-            use_container_width=True,
+            width="stretch",
         ):
             st.session_state.pop(
                 "chapter_resync_success",
@@ -873,6 +991,7 @@ st.caption(
 
 
 show_resync_success_dialog()
+show_deduplicate_success_dialog()
 
 try:
     documents = get_all_learning_documents()
@@ -983,6 +1102,14 @@ with tab_chapters:
     )
 
 with tab_cleanup:
+    st.subheader("重複資料安全整理")
+
+    show_duplicate_cleanup(
+        document_id=selected_document_id,
+    )
+
+    st.divider()
+
     st.subheader("單一章節重新同步")
 
     show_single_chapter_resync(

@@ -15,6 +15,11 @@ from src.database.models import (
     QuizAttempt,
     ReviewSchedule,
     WeakPoint,
+    utc_now,
+)
+from src.services.learning_item_identity import (
+    flashcard_identity,
+    quiz_identity,
 )
 
 
@@ -45,7 +50,288 @@ def _safe_int(value, default: int = 0) -> int:
 def _utc_now() -> datetime:
     """取得目前 UTC 時間。"""
 
-    return datetime.utcnow()
+    return utc_now()
+
+
+def _group_duplicate_quizzes(quizzes: list[Quiz]) -> list[list[Quiz]]:
+    groups: dict[tuple[str, str], list[Quiz]] = {}
+
+    for quiz in quizzes:
+        key = (
+            _safe_text(quiz.chapter_id),
+            quiz_identity(quiz.question, quiz.correct_answer),
+        )
+        groups.setdefault(key, []).append(quiz)
+
+    return [items for items in groups.values() if len(items) > 1]
+
+
+def _group_duplicate_flashcards(
+    flashcards: list[Flashcard],
+) -> list[list[Flashcard]]:
+    groups: dict[tuple[str, str], list[Flashcard]] = {}
+
+    for card in flashcards:
+        key = (
+            _safe_text(card.chapter_id),
+            flashcard_identity(card.front, card.back),
+        )
+        groups.setdefault(key, []).append(card)
+
+    return [items for items in groups.values() if len(items) > 1]
+
+
+def _duplicate_summary(session, document_id: int | str) -> dict:
+    quiz_groups = _group_duplicate_quizzes(
+        session.query(Quiz)
+        .filter(Quiz.document_id == document_id)
+        .order_by(Quiz.created_at.asc(), Quiz.id.asc())
+        .all()
+    )
+    flashcard_groups = _group_duplicate_flashcards(
+        session.query(Flashcard)
+        .filter(Flashcard.document_id == document_id)
+        .order_by(Flashcard.created_at.asc(), Flashcard.id.asc())
+        .all()
+    )
+
+    return {
+        "quiz_groups": quiz_groups,
+        "flashcard_groups": flashcard_groups,
+        "duplicate_quiz_group_count": len(quiz_groups),
+        "duplicate_quiz_count": sum(len(group) - 1 for group in quiz_groups),
+        "duplicate_flashcard_group_count": len(flashcard_groups),
+        "duplicate_flashcard_count": sum(
+            len(group) - 1 for group in flashcard_groups
+        ),
+    }
+
+
+def _merge_review_schedules(
+    session,
+    item_type: str,
+    canonical_id: str,
+    duplicate_id: str,
+) -> int:
+    canonical_schedules = (
+        session.query(ReviewSchedule)
+        .filter(
+            ReviewSchedule.item_type == item_type,
+            ReviewSchedule.item_id == canonical_id,
+        )
+        .order_by(ReviewSchedule.created_at.asc())
+        .all()
+    )
+    duplicate_schedules = (
+        session.query(ReviewSchedule)
+        .filter(
+            ReviewSchedule.item_type == item_type,
+            ReviewSchedule.item_id == duplicate_id,
+        )
+        .order_by(ReviewSchedule.created_at.asc())
+        .all()
+    )
+
+    if not duplicate_schedules:
+        return 0
+
+    if not canonical_schedules:
+        duplicate_schedules[0].item_id = canonical_id
+        canonical_schedules = [duplicate_schedules[0]]
+        duplicate_schedules = duplicate_schedules[1:]
+
+    canonical = canonical_schedules[0]
+    redundant = canonical_schedules[1:] + duplicate_schedules
+
+    for schedule in redundant:
+        canonical.due_at = min(canonical.due_at, schedule.due_at)
+        canonical.interval_days = max(
+            canonical.interval_days,
+            schedule.interval_days,
+        )
+        canonical.repetition_count = max(
+            canonical.repetition_count,
+            schedule.repetition_count,
+        )
+        canonical.ease_factor = max(canonical.ease_factor, schedule.ease_factor)
+        canonical.is_completed = (
+            canonical.is_completed and schedule.is_completed
+        )
+        canonical.updated_at = max(canonical.updated_at, schedule.updated_at)
+        session.delete(schedule)
+
+    return len(redundant)
+
+
+def deduplicate_document_learning_items(
+    document_id: int | str,
+    preview_only: bool = True,
+) -> dict:
+    """Merge duplicate learning items while preserving their history."""
+
+    with get_database_session() as session:
+        document = session.get(Document, document_id)
+
+        if document is None:
+            raise ValueError("找不到指定文件。")
+
+        duplicates = _duplicate_summary(session, document_id)
+        result = {
+            "document_id": _safe_text(document_id),
+            "document_name": document.file_name,
+            "preview_only": preview_only,
+            "duplicate_quiz_group_count": duplicates[
+                "duplicate_quiz_group_count"
+            ],
+            "duplicate_quiz_count": duplicates["duplicate_quiz_count"],
+            "duplicate_flashcard_group_count": duplicates[
+                "duplicate_flashcard_group_count"
+            ],
+            "duplicate_flashcard_count": duplicates[
+                "duplicate_flashcard_count"
+            ],
+            "merged_quiz_count": 0,
+            "merged_flashcard_count": 0,
+            "moved_quiz_attempt_count": 0,
+            "moved_flashcard_review_count": 0,
+            "merged_schedule_count": 0,
+            "merged_weak_point_count": 0,
+        }
+
+        if preview_only:
+            return result
+
+        try:
+            for group in duplicates["quiz_groups"]:
+                reference_counts = {
+                    quiz.id: (
+                        session.query(func.count(QuizAttempt.id))
+                        .filter(QuizAttempt.quiz_id == quiz.id)
+                        .scalar()
+                        or 0
+                    )
+                    + (
+                        session.query(func.count(WeakPoint.id))
+                        .filter(WeakPoint.quiz_id == quiz.id)
+                        .scalar()
+                        or 0
+                    )
+                    for quiz in group
+                }
+                canonical = sorted(
+                    group,
+                    key=lambda quiz: (
+                        -reference_counts[quiz.id],
+                        quiz.created_at,
+                        quiz.id,
+                    ),
+                )[0]
+
+                for duplicate in group:
+                    if duplicate.id == canonical.id:
+                        continue
+
+                    moved_attempts = (
+                        session.query(QuizAttempt)
+                        .filter(QuizAttempt.quiz_id == duplicate.id)
+                        .update(
+                            {QuizAttempt.quiz_id: canonical.id},
+                            synchronize_session=False,
+                        )
+                    )
+                    result["moved_quiz_attempt_count"] += moved_attempts
+
+                    canonical_weak = (
+                        session.query(WeakPoint)
+                        .filter(WeakPoint.quiz_id == canonical.id)
+                        .first()
+                    )
+                    duplicate_weak = (
+                        session.query(WeakPoint)
+                        .filter(WeakPoint.quiz_id == duplicate.id)
+                        .first()
+                    )
+
+                    if duplicate_weak and canonical_weak:
+                        canonical_weak.wrong_count += duplicate_weak.wrong_count
+                        canonical_weak.partial_count += duplicate_weak.partial_count
+                        canonical_weak.correct_count += duplicate_weak.correct_count
+                        canonical_weak.weakness_score = max(
+                            canonical_weak.weakness_score,
+                            duplicate_weak.weakness_score,
+                        )
+                        status_order = {"active": 2, "improving": 1, "mastered": 0}
+                        canonical_weak.status = max(
+                            (canonical_weak.status, duplicate_weak.status),
+                            key=lambda value: status_order.get(value, 2),
+                        )
+                        if duplicate_weak.updated_at >= canonical_weak.updated_at:
+                            canonical_weak.last_answer = duplicate_weak.last_answer
+                        canonical_weak.updated_at = max(
+                            canonical_weak.updated_at,
+                            duplicate_weak.updated_at,
+                        )
+                        session.delete(duplicate_weak)
+                        result["merged_weak_point_count"] += 1
+                    elif duplicate_weak:
+                        duplicate_weak.quiz_id = canonical.id
+
+                    result["merged_schedule_count"] += _merge_review_schedules(
+                        session,
+                        "quiz",
+                        canonical.id,
+                        duplicate.id,
+                    )
+                    session.delete(duplicate)
+                    result["merged_quiz_count"] += 1
+
+            for group in duplicates["flashcard_groups"]:
+                reference_counts = {
+                    card.id: (
+                        session.query(func.count(FlashcardReview.id))
+                        .filter(FlashcardReview.flashcard_id == card.id)
+                        .scalar()
+                        or 0
+                    )
+                    for card in group
+                }
+                canonical = sorted(
+                    group,
+                    key=lambda card: (
+                        -reference_counts[card.id],
+                        card.created_at,
+                        card.id,
+                    ),
+                )[0]
+
+                for duplicate in group:
+                    if duplicate.id == canonical.id:
+                        continue
+
+                    moved_reviews = (
+                        session.query(FlashcardReview)
+                        .filter(FlashcardReview.flashcard_id == duplicate.id)
+                        .update(
+                            {FlashcardReview.flashcard_id: canonical.id},
+                            synchronize_session=False,
+                        )
+                    )
+                    result["moved_flashcard_review_count"] += moved_reviews
+                    result["merged_schedule_count"] += _merge_review_schedules(
+                        session,
+                        "flashcard",
+                        canonical.id,
+                        duplicate.id,
+                    )
+                    session.delete(duplicate)
+                    result["merged_flashcard_count"] += 1
+
+            session.flush()
+            session.commit()
+            return result
+        except Exception:
+            session.rollback()
+            raise
 
 
 def get_all_learning_documents() -> list[dict]:
@@ -521,6 +807,11 @@ def get_document_diagnostics(
             or 0
         )
 
+        duplicate_items = _duplicate_summary(
+            session,
+            document_id,
+        )
+
         warnings = []
 
         if not chapters:
@@ -561,6 +852,18 @@ def get_document_diagnostics(
         if orphan_flashcard_review_count > 0:
             warnings.append(
                 "存在找不到 Flash Card 的複習紀錄。"
+            )
+
+        if duplicate_items["duplicate_quiz_count"] > 0:
+            warnings.append(
+                "存在重複 Quiz："
+                f"{duplicate_items['duplicate_quiz_count']} 題可安全合併。"
+            )
+
+        if duplicate_items["duplicate_flashcard_count"] > 0:
+            warnings.append(
+                "存在重複 Flash Cards："
+                f"{duplicate_items['duplicate_flashcard_count']} 張可安全合併。"
             )
 
         return {
@@ -605,6 +908,12 @@ def get_document_diagnostics(
                         orphan_flashcard_review_count
                     )
                 ),
+                "duplicate_quiz_count": duplicate_items[
+                    "duplicate_quiz_count"
+                ],
+                "duplicate_flashcard_count": duplicate_items[
+                    "duplicate_flashcard_count"
+                ],
             },
             "chapters": chapter_rows,
             "warnings": warnings,

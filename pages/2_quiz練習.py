@@ -165,6 +165,9 @@ def build_document_options(documents: list[dict]) -> dict[str, str]:
                 f"{format_datetime(document.get('updated_at'))}）"
             )
 
+        if label in options:
+            label = f"{label}｜{safe_text(document.get('id'))[:8]}"
+
         options[label] = safe_text(document.get("id"))
 
     return options
@@ -298,7 +301,7 @@ def show_quiz_practice(document_id: str, chapter_id: str) -> None:
         if st.button(
             reveal_button_label,
             key=f"reveal_button_{quiz_id}",
-            use_container_width=False,
+            width="content",
         ):
             st.session_state[
                 reveal_key
@@ -327,7 +330,7 @@ def show_quiz_practice(document_id: str, chapter_id: str) -> None:
                 correct_clicked = st.button(
                     "✅ 答對",
                     key=f"rate_correct_{quiz_id}",
-                    use_container_width=True,
+                    width="stretch",
                     type="primary",
                 )
 
@@ -335,14 +338,14 @@ def show_quiz_practice(document_id: str, chapter_id: str) -> None:
                 partial_clicked = st.button(
                     "🟡 部分答對",
                     key=f"rate_partial_{quiz_id}",
-                    use_container_width=True,
+                    width="stretch",
                 )
 
             with rating_col3:
                 wrong_clicked = st.button(
                     "❌ 答錯",
                     key=f"rate_wrong_{quiz_id}",
-                    use_container_width=True,
+                    width="stretch",
                 )
 
             selected_rating = None
@@ -615,13 +618,7 @@ if not documents:
     )
     st.stop()
 
-document_labels = [
-    safe_text(
-        document.get("file_name"),
-        "未命名文件",
-    )
-    for document in documents
-]
+document_labels = list(build_document_options(documents).keys())
 
 selected_document_index = st.selectbox(
     "選擇文件",

@@ -1,248 +1,107 @@
-# AI Notion Note Organizer
+# AI Notion 筆記整理器
 
-一個使用 Python、Streamlit、OpenAI API 與 Notion API 製作的文件整理工具。
+一套以 Python、Streamlit、OpenAI、Notion API 與 SQLite 建立的文件學習系統。它能解析 PDF、DOCX、TXT 和 Markdown，辨識主章節，生成結構化學習筆記，匯出成 Notion 子頁，並提供 Quiz、Flash Card、弱點追蹤和學習儀表板。
 
-使用者可上傳 PDF、DOCX、TXT 或 Markdown 文件，系統會自動解析內容、清理文字、分段分析，並產生結構化筆記、Mermaid 圖表、Quiz、Flash Cards，最後可匯出 Markdown／JSON，或直接建立 Notion 筆記頁面。
+## 主要功能
 
----
+- 多格式文件上傳與解析。
+- 主章節、跨行標題和描述性標題偵測。
+- Chunk 分析與整份內容合併。
+- 逐章詳細筆記與 PDF 視覺分析。
+- Markdown、JSON 和原生 Notion Blocks 匯出。
+- Notion 父頁、章節子頁、Callout、Toggle、Code、Table 和 Image。
+- 視覺/筆記快取與 Notion 失敗續跑。
+- Quiz 作答、自評、錯題與 WeakPoint。
+- Flash Card 翻卡、熟悉度與複習排程。
+- 學習儀表板與 SQLite 資料診斷。
+- 非破壞性重新分析、題目去重與舊快取回填。
+- Windows 雙擊啟動。
 
-## 功能特色
+## 一鍵啟動
 
-* 支援 PDF、DOCX、TXT、Markdown 文件上傳
-* 自動驗證檔案格式與大小
-* 自動解析、清理與分段文字內容
-* 使用 OpenAI API 分段分析與整合文件內容
-* 產生文件摘要與重點整理
-* 產生 Mermaid 知識流程圖
-* 自動產生 Quiz 與 Flash Cards
-* 匯出 Notion Markdown 檔案
-* 匯出 JSON 結構化資料
-* 直接建立 Notion 筆記頁面
-* Quiz 與 Flash Cards 會在 Notion 中建立為可收合的 Toggle 區塊
-
----
-
-## 系統流程
+完成環境安裝後，雙擊：
 
 ```text
-上傳文件
-→ 驗證檔案
-→ 解析文字
-→ 清理文字
-→ Chunk 分段
-→ AI 分段分析
-→ AI 整合完整筆記
-→ 摘要 / 重點 / Mermaid / Quiz / Flash Cards
-→ Markdown / JSON 匯出
-→ 建立 Notion 頁面
+啟動_AI筆記整理器.bat
 ```
 
----
+Launcher 會檢查虛擬環境、必要套件和 SQLite Schema，尋找可用 Port，啟動 Streamlit 並開啟瀏覽器。
 
-## 專案結構
-
-```text
-ai_notion-note-organizer/
-├── app.py
-├── requirements.txt
-├── .env
-├── .env.example
-├── README.md
-│
-├── docs/
-│   ├── 01_project_overview.md
-│   ├── 02_system_architecture.md
-│   ├── 03_project_structure.md
-│   ├── 04_tech_stack.md
-│   ├── 05_database_design.md
-│   ├── 06_data_flow.md
-│   ├── 07_prompt_design.md
-│   ├── 08_api_design.md
-│   ├── 09_ui_ux_design.md
-│   ├── 10_development_roadmap.md
-│   └── 11_sprint_planning.md
-│
-├── src/
-│   ├── config/
-│   ├── exporters/
-│   ├── models/
-│   ├── parsers/
-│   ├── processors/
-│   ├── prompts/
-│   ├── services/
-│   ├── validators/
-│   └── utils/
-│
-├── outputs/
-├── sample_files/
-└── tests/
-```
-
----
-
-## 技術棧
-
-| 類型        | 技術                  |
-| --------- | ------------------- |
-| 前端介面      | Streamlit           |
-| 程式語言      | Python              |
-| AI 分析     | OpenAI API          |
-| 文件解析      | PyMuPDF、python-docx |
-| 資料模型驗證    | Pydantic            |
-| 環境變數管理    | python-dotenv       |
-| Notion 整合 | notion-client       |
-| 筆記匯出      | Markdown、JSON       |
-| 視覺化       | Mermaid             |
-
----
-
-## 安裝方式
-
-### 1. 複製專案
+也可以手動執行：
 
 ```powershell
-git clone <your-repository-url>
-cd ai_notion-note-organizer
+.venv\Scripts\python.exe -m streamlit run AI_Notion_筆記整理器.py
 ```
 
-### 2. 建立虛擬環境
+## 安裝
 
 ```powershell
 python -m venv .venv
-```
-
-### 3. 啟動虛擬環境
-
-```powershell
 .venv\Scripts\Activate.ps1
-```
-
-### 4. 安裝套件
-
-```powershell
 pip install -r requirements.txt
 ```
 
----
-
-## 環境變數設定
-
-在專案根目錄建立 `.env` 檔案：
+在根目錄建立 `.env`：
 
 ```text
-OPENAI_API_KEY=你的_OpenAI_API_Key
+OPENAI_API_KEY=your_openai_api_key
+NOTION_API_KEY=your_notion_integration_token
+NOTION_PARENT_PAGE_ID=your_parent_page_id
 
 OPENAI_CHUNK_MODEL=gpt-5-mini
 OPENAI_MERGE_MODEL=gpt-5
-
-MAX_FILE_SIZE_MB=10
+MAX_FILE_SIZE_MB=25
 CHUNK_SIZE=6000
 CHUNK_OVERLAP=500
-
-NOTION_API_KEY=你的_Notion_Integration_Token
-NOTION_PARENT_PAGE_ID=你的_Notion_父頁面_ID
 ```
 
-請勿將 `.env` 上傳到 GitHub。
+請勿將 `.env`、`.venv` 或 `outputs` 上傳到公開 Repository 或放入程式碼備份。
 
----
-
-## 啟動專案
-
-```powershell
-streamlit run app.py
-```
-
-啟動後，終端機會顯示本機網址，通常是：
+## 專案入口
 
 ```text
-http://localhost:8501
+AI_Notion_筆記整理器.py        主工作台
+pages/1_文件管理.py            文件管理
+pages/2_quiz練習.py            Quiz 練習
+pages/3_flash_card複習.py      Flash Card 複習
+pages/4_學習儀錶板.py          學習統計
+pages/5_資料管理與診斷.py      維護與修復
+launcher.py                    Windows 啟動器
 ```
 
----
+## 技術文件
 
-## 使用流程
+從 [文件閱讀指南](docs/00_reading_guide.md) 開始。完整文件涵蓋系統架構、檔案職責、技術選型、Database Schema、資料流、Prompt、API、UI、開發路線、程式碼導讀和展示問答。
 
-1. 開啟網頁介面
-2. 上傳 PDF、DOCX、TXT 或 Markdown 文件
-3. 點擊「開始分析」
-4. 確認文字解析與分段結果
-5. 點擊「分析整份文件」
-6. 查看摘要、重點、Mermaid、Quiz、Flash Cards
-7. 選擇下載 Markdown 或 JSON
-8. 或點擊「建立 Notion 筆記頁面」
+特別推薦：
 
----
+- [系統架構](docs/02_system_architecture.md)
+- [端到端資料流](docs/06_data_flow.md)
+- [核心程式碼導讀](docs/12_code_walkthrough.md)
+- [展示腳本與技術問答](docs/13_demo_and_technical_qa.md)
 
-## Notion 整合說明
+## 測試
 
-系統會在指定的 Notion 父頁面下建立新的子頁面。
+```powershell
+.venv\Scripts\python.exe -m unittest discover -s tests -v
+.venv\Scripts\python.exe -m py_compile launcher.py AI_Notion_筆記整理器.py
+```
 
-建立完成後：
+目前穩定性測試重點包括：重複題目清理、作答/複習關聯保留、重新分析沿用章節 ID，以及非破壞性同步。
 
-* 文件摘要會以段落顯示
-* 重點整理會以項目清單顯示
-* Mermaid 會以程式碼區塊保存
-* Quiz 題目會以 Toggle 區塊顯示
-* Flash Cards 會以 Toggle 區塊顯示
+## 備份
 
-使用者可以點擊 Quiz 題目查看答案，或點擊 Flash Card 正面查看背面內容。
+程式碼備份應排除：
 
----
+```text
+.env
+.venv/
+outputs/
+backups/
+```
 
-## 支援格式
+`outputs` 含 SQLite、快取和匯出狀態；若要備份個人學習資料，應另外建立加密且不公開的資料備份。
 
-| 格式       | 支援狀態      |
-| -------- | --------- |
-| PDF      | 支援文字型 PDF |
-| DOCX     | 支援        |
-| TXT      | 支援        |
-| Markdown | 支援        |
+## 現況與限制
 
-目前不支援掃描型圖片 PDF 的 OCR 辨識。
-
----
-
-## 已知限制
-
-* 長文件會因 Chunk 數量增加而提升分析時間與 API 成本
-* Mermaid 目前以原始碼形式寫入 Notion，不會自動轉成 Notion 視覺化圖表
-* AI 產生內容仍可能需要人工檢查
-* PDF 若沒有文字層，系統無法直接解析內容
-* Notion 頁面必須先授權給 Integration，否則無法建立筆記
-
----
-
-## V1 功能完成狀態
-
-* [x] 文件上傳與驗證
-* [x] PDF / DOCX / TXT / Markdown 解析
-* [x] 文字清理與分段
-* [x] OpenAI 分段分析
-* [x] 文件整合摘要
-* [x] Mermaid 圖表生成
-* [x] Quiz 與 Flash Cards 生成
-* [x] Markdown 匯出
-* [x] JSON 匯出
-* [x] Notion API 建立頁面
-* [x] Notion Toggle Quiz / Flash Cards
-
----
-
-## V1.5 規劃
-
-* 章節化學習筆記生成
-* 每章白話講解
-* 自動產生案例與延伸說明
-* 常見錯誤與易混淆觀念
-* 每章 Quiz 與 Flash Cards
-* 更進階的視覺化圖表
-* 手動優化摘要與 Mermaid
-* 更完整的錯誤提示與測試覆蓋
-
----
-
-## 作者
-
-AI Notion Note Organizer
-Python AI 應用工程師學習專案
+目前完成到 V2.5，定位是 Windows 單機應用。SQLite、檔案快取和 Streamlit 很適合個人使用，但尚未提供多人帳號、雲端資料隔離、背景工作佇列和正式資料庫 Migration。雲端化路線請參考 `docs/10_development_roadmap.md`。

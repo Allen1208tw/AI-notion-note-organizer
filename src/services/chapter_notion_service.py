@@ -1930,7 +1930,7 @@ def _sync_chapter_note_to_sqlite(
     chapter_note: ChapterLearningNote,
     force: bool = False,
 ) -> dict:
-    """將章節 Quiz / Flash Cards 同步到 SQLite。"""
+    """Merge chapter learning items into SQLite without deleting history."""
 
     if not document_id:
         return {
@@ -1941,49 +1941,35 @@ def _sync_chapter_note_to_sqlite(
             "flashcard_count": 0,
         }
 
-    counts = count_chapter_learning_items(
-        document_id=document_id,
-        source_chapter_id=str(chapter_id),
-    )
-
-    quiz_count = int(
-        counts.get("quiz_count", 0) or 0
-    )
-
-    flashcard_count = int(
-        counts.get("flashcard_count", 0) or 0
-    )
-
-    if (
-        not force
-        and (
-            quiz_count > 0
-            or flashcard_count > 0
-        )
-    ):
-        return {
-            "synced": False,
-            "skipped": True,
-            "reason": "SQLite 已有學習資料，避免覆蓋既有作答紀錄",
-            "quiz_count": quiz_count,
-            "flashcard_count": flashcard_count,
-        }
-
     result = save_chapter_learning_items(
         document_id=document_id,
         source_chapter_id=str(chapter_id),
         chapter_note=chapter_note,
     )
 
+    added_quiz_count = int(result.get("added_quiz_count", 0) or 0)
+    added_flashcard_count = int(
+        result.get("added_flashcard_count", 0) or 0
+    )
+    saved = bool(result.get("saved"))
+
     return {
-        "synced": bool(result.get("saved")),
-        "skipped": False,
+        "synced": saved,
+        "skipped": saved and added_quiz_count == 0 and added_flashcard_count == 0,
         "reason": result.get("reason", ""),
         "quiz_count": int(
             result.get("quiz_count", 0) or 0
         ),
         "flashcard_count": int(
             result.get("flashcard_count", 0) or 0
+        ),
+        "added_quiz_count": added_quiz_count,
+        "added_flashcard_count": added_flashcard_count,
+        "skipped_quiz_count": int(
+            result.get("skipped_quiz_count", 0) or 0
+        ),
+        "skipped_flashcard_count": int(
+            result.get("skipped_flashcard_count", 0) or 0
         ),
     }
 
@@ -2046,7 +2032,7 @@ def _sync_cached_notes_to_sqlite(
                 force=False,
             )
 
-            if result.get("synced"):
+            if result.get("synced") and not result.get("skipped"):
                 summary[
                     "synced_chapter_count"
                 ] += 1
@@ -2054,7 +2040,7 @@ def _sync_cached_notes_to_sqlite(
                     "synced_quiz_count"
                 ] += int(
                     result.get(
-                        "quiz_count",
+                        "added_quiz_count",
                         0,
                     )
                     or 0
@@ -2063,7 +2049,7 @@ def _sync_cached_notes_to_sqlite(
                     "synced_flashcard_count"
                 ] += int(
                     result.get(
-                        "flashcard_count",
+                        "added_flashcard_count",
                         0,
                     )
                     or 0
@@ -2108,8 +2094,8 @@ def sync_single_chapter_cache_to_sqlite(
     - 不呼叫 AI
     - 不建立或修改 Notion 頁面
     - 不依賴 Notion 匯出狀態
-    - 只有 SQLite 該章沒有 Quiz 與 Flash Cards 時才同步
-    - 避免覆蓋既有 QuizAttempt、FlashcardReview 與 WeakPoint
+    - 與既有資料安全合併，只新增缺少項目
+    - 保留既有 QuizAttempt、FlashcardReview 與 WeakPoint
     """
 
     normalized_source_chapter_id = str(
@@ -2136,56 +2122,6 @@ def sync_single_chapter_cache_to_sqlite(
         raise ValueError(
             "找不到對應的 SQLite 文件 ID。"
         )
-
-    existing_counts = (
-        count_chapter_learning_items(
-            document_id=resolved_document_id,
-            source_chapter_id=(
-                normalized_source_chapter_id
-            ),
-        )
-    )
-
-    existing_quiz_count = int(
-        existing_counts.get(
-            "quiz_count",
-            0,
-        )
-        or 0
-    )
-
-    existing_flashcard_count = int(
-        existing_counts.get(
-            "flashcard_count",
-            0,
-        )
-        or 0
-    )
-
-    if (
-        existing_quiz_count > 0
-        or existing_flashcard_count > 0
-    ):
-        return {
-            "synced": False,
-            "skipped": True,
-            "reason": (
-                "該章 SQLite 已有 Quiz 或 Flash Cards。"
-                "請先在資料管理頁清除該章學習資料，"
-                "再執行重新同步。"
-            ),
-            "document_id": resolved_document_id,
-            "source_chapter_id": (
-                normalized_source_chapter_id
-            ),
-            "chapter_title": (
-                normalized_chapter_title
-            ),
-            "quiz_count": existing_quiz_count,
-            "flashcard_count": (
-                existing_flashcard_count
-            ),
-        }
 
     cache_chapter = {
         "chapter_id": (
@@ -2335,6 +2271,18 @@ def sync_single_chapter_cache_to_sqlite(
                 0,
             )
             or 0
+        ),
+        "added_quiz_count": int(
+            result.get("added_quiz_count", 0) or 0
+        ),
+        "added_flashcard_count": int(
+            result.get("added_flashcard_count", 0) or 0
+        ),
+        "skipped_quiz_count": int(
+            result.get("skipped_quiz_count", 0) or 0
+        ),
+        "skipped_flashcard_count": int(
+            result.get("skipped_flashcard_count", 0) or 0
         ),
     }
 
