@@ -21,6 +21,7 @@
 
 | 頁面 | 功能 |
 |---|---|
+| `pages/0_開始使用與設定.py` | 首次使用說明、API Key、Notion 與分析參數設定 |
 | `pages/1_文件管理.py` | 文件清單、狀態、儲存空間與刪除 |
 | `pages/2_quiz練習.py` | 依文件及章節練習 Quiz、顯示答案、自評、錯題與紀錄 |
 | `pages/3_flash_card複習.py` | 依章節翻卡、熟悉度評分、卡片總覽與複習紀錄 |
@@ -39,6 +40,7 @@
 | `src/database/database.py` | SQLAlchemy Engine、Base 與 Session Context Manager |
 | `src/database/models.py` | 所有 ORM Table、關聯、唯一限制與預設值 |
 | `src/database/init_db.py` | 建立資料表並檢查舊資料庫缺少的 Schema |
+| `src/services/app_configuration_service.py` | 讀寫本機 `.env`、驗證參數與要求完整重啟 |
 
 ## Parsers 與 Processors
 

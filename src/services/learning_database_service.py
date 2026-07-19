@@ -458,6 +458,57 @@ def _find_chapter_record(
     return session.execute(statement).scalars().first()
 
 
+def _normalize_export_chapter_items(items) -> list[dict]:
+    """Return export chapter results as dictionaries."""
+
+    if items is None:
+        return []
+
+    if not isinstance(items, (list, tuple, set)):
+        items = [items]
+
+    normalized_items: list[dict] = []
+
+    for item in items:
+        if isinstance(item, dict):
+            normalized_items.append(item)
+            continue
+
+        if isinstance(item, (str, int)):
+            normalized_items.append({"chapter_id": str(item)})
+            continue
+
+        chapter_id = (
+            getattr(item, "chapter_id", None)
+            or getattr(item, "source_chapter_id", None)
+            or getattr(item, "chapter_order", None)
+            or getattr(item, "id", None)
+        )
+
+        normalized_items.append(
+            {
+                "chapter_id": str(chapter_id or ""),
+                "notion_page_id": getattr(item, "notion_page_id", None),
+                "notion_page_url": getattr(item, "notion_page_url", None),
+                "error": getattr(item, "error", None),
+            }
+        )
+
+    return normalized_items
+
+
+def _get_export_chapter_identifier(item: dict) -> str:
+    """Return the chapter id/order field used by export results."""
+
+    return str(
+        item.get("chapter_id")
+        or item.get("source_chapter_id")
+        or item.get("chapter_order")
+        or item.get("id")
+        or ""
+    ).strip()
+
+
 def update_document_export_result(
     document_id: int | str,
     export_result: dict,
@@ -470,24 +521,41 @@ def update_document_export_result(
         if document is None:
             return
 
-        completed_chapters = export_result.get("completed_chapters", [])
-        failed_chapters = export_result.get("failed_chapters", [])
+        completed_chapters = _normalize_export_chapter_items(
+            export_result.get("completed_chapters", [])
+            if isinstance(export_result, dict)
+            else []
+        )
+        failed_chapters = _normalize_export_chapter_items(
+            export_result.get("failed_chapters", [])
+            if isinstance(export_result, dict)
+            else []
+        )
 
         completed_ids = {
-            str(item.get("chapter_id"))
+            _get_export_chapter_identifier(item)
             for item in completed_chapters
+            if _get_export_chapter_identifier(item)
         }
 
         failed_ids = {
-            str(item.get("chapter_id"))
+            _get_export_chapter_identifier(item)
             for item in failed_chapters
+            if _get_export_chapter_identifier(item)
         }
 
+        failed_ids -= completed_ids
+
         for item in completed_chapters:
+            chapter_identifier = _get_export_chapter_identifier(item)
+
+            if not chapter_identifier:
+                continue
+
             chapter = _find_chapter_record(
                 session=session,
                 document_id=document_id,
-                source_chapter_id=str(item.get("chapter_id") or item.get("chapter_order") or 1),
+                source_chapter_id=chapter_identifier,
             )
 
             if chapter:
@@ -505,10 +573,15 @@ def update_document_export_result(
                 _safe_setattr(chapter, "updated_at", utc_now())
 
         for item in failed_chapters:
+            chapter_identifier = _get_export_chapter_identifier(item)
+
+            if not chapter_identifier or chapter_identifier in completed_ids:
+                continue
+
             chapter = _find_chapter_record(
                 session=session,
                 document_id=document_id,
-                source_chapter_id=str(item.get("chapter_id") or item.get("chapter_order") or 1),
+                source_chapter_id=chapter_identifier,
             )
 
             if chapter:

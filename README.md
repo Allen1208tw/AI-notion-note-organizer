@@ -18,6 +18,62 @@
 - SQLite 持久化背景工作佇列，可離開目前頁面並查看進度。
 - Windows 單一安裝 EXE、桌面捷徑與版本更新檢查。
 
+## 最新修正
+
+### v3.2.0
+
+- Added selectable AI provider support: OpenAI or Gemini.
+- Gemini mode can run the full note generation pipeline, including document summary/chunk analysis, chapter detailed notes, Quiz/Flash Cards, Mermaid content, and PDF visual page analysis.
+- Added `AI_PROVIDER`, `GEMINI_API_KEY`, and `GEMINI_DETAIL_MODEL` configuration fields.
+- Added Gemini connection test in the setup page and packaged `google-genai` for Windows release builds.
+
+### v3.2.1
+
+- 改善 Windows 安裝檔的覆蓋更新流程。
+- 使用者已安裝舊版時，可直接執行新版 `AI_Notion_Note_Organizer_Setup.exe` 進行原地更新。
+- 更新會替換程式檔案，但保留 AppData 裡的 API Key、SQLite、快取、輸出檔案與背景工作狀態。
+- 安裝程式會先關閉正在執行的舊版程式，避免檔案被鎖住而更新失敗。
+
+### v3.2.2
+
+- 修正 Notion 匯出完成判斷，避免 17 章只產生部分章節卻顯示完成。
+- 章節必須實際記錄 Notion 頁面 ID 或 URL，才會被視為完成。
+- 背景匯出結果會顯示本次使用的 AI 供應商與模型，例如 `Gemini｜gemini-3.5-flash`。
+- 「開始整份 Notion 匯出」會強制重新呼叫 AI 生成全新筆記與圖片分析。
+- 「繼續未完成的 Notion 匯出」才會沿用既有快取。
+
+### v3.1.5
+
+- Fixed Notion export completion cleanup when `completed_chapters` or `failed_chapters` are stored as strings or numbers instead of dictionaries.
+- Successful background or foreground Notion exports no longer show `'str' object has no attribute 'get'` after the pages have already been created.
+- When the same chapter appears in both completed and failed lists from an older export state, completed status wins so the UI reports the real finished state.
+
+### v3.1.1
+
+- 修正安裝版生成詳細筆記時，後續章節誤用第 1 章快取，導致所有 Notion 子頁內容都像第 1 章的問題。
+- 章節快取 fallback 現在必須符合 `chapter_id`、`source_chapter_id`、`chapter_order` 或章節標題，不會因為資料夾裡只有一個快取檔就直接套用。
+- Mermaid 學習地圖改用 Notion 官方支援的 `mermaid` code block language，並自動移除 AI 可能產生的 Markdown code fence，讓 Notion 優先以圖表方式呈現。
+- 新增回歸測試，避免單一快取檔再次被錯誤套用到其他章節。
+
+### v3.1.2
+
+- 主頁重新開啟時會自動從 SQLite 找回等待中或執行中的背景工作。
+- 即使瀏覽器分頁關掉後再打開，主頁上方也會顯示「目前仍有背景工作在執行」與進度入口。
+- 這項修正避免使用者誤以為關掉網頁後文件分析或 Notion 匯出被重置。
+
+### v3.1.3
+
+- 安裝版會固定優先使用 `%LOCALAPPDATA%\AI Notion Note Organizer\.env` 作為個人設定檔。
+- 若舊版曾把 `.env` 放在安裝目錄，新版啟動時會自動複製到 AppData，讓 OpenAI API Key、Notion Token 和父頁設定在重新下載或更新後保留下來。
+- 已補上設定檔搬家測試，避免更新流程再次造成 API 設定遺失。
+
+### v3.1.4
+
+- PDF 視覺分析圖片會另存為圖片檔案快取，Notion 匯出時會建立真正的 image block，不再只留下圖片解讀文字。
+- 舊視覺快取若只有頁碼和文字、沒有圖片本體，且背景工作仍有原始 PDF，系統會依頁碼重新渲染圖片，不重跑 AI。
+- 主頁與「背景工作」頁改為自動刷新工作進度，不需要手動按「更新狀態」。
+- Mermaid 學習地圖會安全化節點標籤內的 HTML/CSS 特殊符號，降低 `<div>`、`#id`、`|`、`:` 等內容造成 Notion 圖表無法渲染的機率。
+
 ## 一鍵啟動
 
 完成環境安裝後，雙擊：
@@ -29,6 +85,19 @@
 Launcher 會檢查虛擬環境、必要套件和 SQLite Schema，尋找可用 Port，啟動 Streamlit 並開啟瀏覽器。
 
 Launcher 也會啟動獨立背景 Worker。文件分析與整份 Notion 匯出會先寫入 SQLite 佇列，由 Worker 執行；切換頁面不會中斷工作，Worker 意外關閉後也會在下次啟動時恢復未完成工作。
+
+## 首次使用設定
+
+安裝版啟動後，從左側開啟「開始使用與設定」。網頁可直接輸入並保存：
+
+- OpenAI API Key：文件分析必要。
+- Notion Integration Token：只有匯出 Notion 時需要。
+- Notion 父頁網址或 Page ID：可直接貼完整網址。
+- 分段分析模型與整體合併模型。
+- 最大檔案大小、Chunk 大小與重疊字數。
+- 是否自動下載更新。
+
+API Key 使用密碼欄位，不會回填到畫面。設定寫入 `%LOCALAPPDATA%\AI Notion Note Organizer\.env`，按「套用設定並重新啟動」後，Streamlit 與背景 Worker 會一起重新載入設定。安裝目錄另附 `使用說明.txt`，開始功能表也有使用說明捷徑。
 
 也可以手動執行：
 
@@ -65,6 +134,7 @@ CHUNK_OVERLAP=500
 ```text
 AI_Notion_筆記整理器.py        主工作台
 pages/1_文件管理.py            文件管理
+pages/0_開始使用與設定.py      API Key、Notion、模型與分析參數
 pages/2_quiz練習.py            Quiz 練習
 pages/3_flash_card複習.py      Flash Card 複習
 pages/4_學習儀錶板.py          學習統計
@@ -104,7 +174,7 @@ release/AI_Notion_Note_Organizer_Setup.exe
 %LOCALAPPDATA%\AI Notion Note Organizer\
 ```
 
-首次使用時，依同目錄的 `.env.example` 建立 `.env` 並填入 API Key。安裝與更新不會把 `.env`、SQLite、快取或背景工作打包進程式，也不會在升級時刪除它們。
+首次使用時，依同目錄的 `.env.example` 建立 `.env` 並填入 API Key。安裝與更新不會把 `.env`、SQLite、快取或背景工作打包進程式，也不會在升級時刪除它們。新版安裝檔可直接覆蓋舊版安裝，安裝程式會先關閉舊版程式，再替換安裝目錄內的執行檔與 `_internal` 程式資源。
 
 ## 自動更新
 

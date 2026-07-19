@@ -14,12 +14,27 @@ datas = [
 ]
 
 hiddenimports = collect_submodules("src")
+for dynamic_package in (
+    "src.config",
+    "src.database",
+    "src.exporters",
+    "src.models",
+    "src.parsers",
+    "src.processors",
+    "src.prompts",
+    "src.services",
+    "src.validators",
+):
+    hiddenimports += collect_submodules(dynamic_package)
+hiddenimports = sorted(set(hiddenimports))
 binaries = []
 
 for package_name in (
     "streamlit",
     "notion_client",
     "openai",
+    "google",
+    "google.genai",
     "sqlalchemy",
     "pydantic",
     "fitz",

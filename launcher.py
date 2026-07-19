@@ -20,6 +20,7 @@ PROJECT_DIR = RESOURCE_DIR
 APP_FILE = PROJECT_DIR / "AI_Notion_筆記整理器.py"
 BACKGROUND_WORKER_FILE = PROJECT_DIR / "background_worker.py"
 SERVER_STATE_FILE = OUTPUT_DIR / ".streamlit_server.json"
+RESTART_REQUEST_FILE = OUTPUT_DIR / ".restart_requested"
 REQUIRED_MODULES = {
     "streamlit": "streamlit",
     "sqlalchemy": "sqlalchemy",
@@ -31,7 +32,30 @@ REQUIRED_MODULES = {
     "pydantic": "pydantic",
     "notion_client": "notion-client",
     "openai": "openai",
+    "google.genai": "google-genai",
 }
+APPLICATION_IMPORT_CHECKS = (
+    "src.exporters.json_exporter",
+    "src.exporters.markdown_builder",
+    "src.parsers.docx_parser",
+    "src.parsers.markdown_parser",
+    "src.parsers.pdf_parser",
+    "src.parsers.text_parser",
+    "src.processors.chapter_detector",
+    "src.processors.pdf_visual_extractor",
+    "src.processors.text_chunker",
+    "src.processors.text_cleaner",
+    "src.services.analysis_service",
+    "src.services.app_configuration_service",
+    "src.services.background_job_service",
+    "src.services.chapter_notion_service",
+    "src.services.chapter_service",
+    "src.services.gemini_service",
+    "src.services.learning_database_service",
+    "src.services.notion_service",
+    "src.services.pdf_visual_service",
+    "src.validators.mermaid_validator",
+)
 
 
 def _port_is_open(port: int) -> bool:
@@ -96,6 +120,12 @@ def _check_environment() -> list[str]:
             + ", ".join(missing_packages)
             + "。請執行 pip install -r requirements.txt"
         )
+
+    for module_name in APPLICATION_IMPORT_CHECKS:
+        try:
+            importlib.import_module(module_name)
+        except Exception as error:
+            errors.append(f"核心模組載入失敗 {module_name}：{error}")
 
     if not errors:
         try:
@@ -180,6 +210,17 @@ def _wait_for_server(port: int, process: subprocess.Popen, timeout: float = 20) 
     return False
 
 
+def _terminate_process(process: subprocess.Popen | None) -> None:
+    if process is None or process.poll() is not None:
+        return
+    process.terminate()
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=5)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="AI Notion 筆記整理器啟動器")
     parser.add_argument(
@@ -224,49 +265,56 @@ def main() -> int:
 
     port = _find_available_port()
     url = f"http://127.0.0.1:{port}"
-    command = _streamlit_command(port)
-
     print("正在啟動 AI Notion 筆記整理器...")
-    worker_process = subprocess.Popen(_worker_command(), cwd=PROJECT_DIR)
-    process = subprocess.Popen(command, cwd=PROJECT_DIR)
+    worker_process: subprocess.Popen | None = None
+    process: subprocess.Popen | None = None
+    browser_opened = False
 
     try:
-        if not _wait_for_server(port, process):
-            print("Streamlit 啟動失敗，請查看上方錯誤訊息。")
-            return process.poll() or 1
+        while True:
+            RESTART_REQUEST_FILE.unlink(missing_ok=True)
+            worker_process = subprocess.Popen(_worker_command(), cwd=PROJECT_DIR)
+            process = subprocess.Popen(_streamlit_command(port), cwd=PROJECT_DIR)
 
-        SERVER_STATE_FILE.write_text(
-            json.dumps(
-                {"pid": process.pid, "port": port},
-                ensure_ascii=False,
-                indent=2,
-            ),
-            encoding="utf-8",
-        )
-        print(f"應用程式已開啟：{url}")
-        print("背景工作 Worker 已啟動。")
-        print("保持這個視窗開啟；關閉視窗即可停止應用程式與 Worker。")
-        webbrowser.open(url)
-        threading.Thread(
-            target=_check_for_updates_in_background,
-            daemon=True,
-        ).start()
-        return process.wait()
+            if not _wait_for_server(port, process):
+                print("Streamlit 啟動失敗，請查看上方錯誤訊息。")
+                return process.poll() or 1
+
+            SERVER_STATE_FILE.write_text(
+                json.dumps(
+                    {"pid": process.pid, "port": port},
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+            print(f"應用程式已開啟：{url}")
+            print("背景工作 Worker 已啟動。")
+            if not browser_opened:
+                print("保持這個視窗開啟；關閉視窗即可停止應用程式與 Worker。")
+                webbrowser.open(url)
+                threading.Thread(
+                    target=_check_for_updates_in_background,
+                    daemon=True,
+                ).start()
+                browser_opened = True
+
+            exit_code = process.wait()
+            process = None
+            _terminate_process(worker_process)
+            worker_process = None
+
+            if RESTART_REQUEST_FILE.exists():
+                RESTART_REQUEST_FILE.unlink(missing_ok=True)
+                print("設定已更新，正在重新啟動應用程式與 Worker...")
+                time.sleep(0.5)
+                continue
+            return exit_code
     except KeyboardInterrupt:
         return 0
     finally:
-        if worker_process.poll() is None:
-            worker_process.terminate()
-            try:
-                worker_process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                worker_process.kill()
-        if process.poll() is None:
-            process.terminate()
-            try:
-                process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                process.kill()
+        _terminate_process(worker_process)
+        _terminate_process(process)
         try:
             SERVER_STATE_FILE.unlink(missing_ok=True)
         except OSError:

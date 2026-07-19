@@ -3,7 +3,14 @@ from pathlib import Path
 import streamlit as st
 import streamlit.components.v1 as components
 
-from src.config.settings import OPENAI_MODEL, SUPPORTED_FILE_TYPES
+from src.config.settings import (
+    AI_PROVIDER,
+    GEMINI_DETAIL_MODEL,
+    OPENAI_MODEL,
+    OPENAI_CHUNK_MODEL,
+    OPENAI_MERGE_MODEL,
+    SUPPORTED_FILE_TYPES,
+)
 from src.database.init_db import initialize_database
 from src.exporters.json_exporter import build_json
 from src.exporters.markdown_builder import build_markdown
@@ -16,9 +23,11 @@ from src.processors.text_cleaner import clean_text
 from src.processors.text_chunker import chunk_text
 from src.models.analysis_models import AnalysisResult, ChunkAnalysisResult
 from src.services.analysis_service import analyze_chunk, analyze_document
+from src.services.app_configuration_service import get_configuration_status
 from src.services.background_job_service import (
     create_background_job,
     get_background_job,
+    list_background_jobs,
     load_background_job_result,
     request_background_job_cancel,
 )
@@ -43,7 +52,10 @@ from src.services.learning_database_service import (
 from src.services.notion_service import create_notion_page
 from src.services.openai_service import test_openai_connection
 from src.services.pdf_visual_service import analyze_chapter_visuals
-from src.validators.mermaid_validator import validate_mermaid
+from src.validators.mermaid_validator import (
+    sanitize_mermaid_for_notion,
+    validate_mermaid,
+)
 
 
 st.set_page_config(
@@ -157,6 +169,22 @@ def inject_full_text_css() -> None:
 
 
 inject_full_text_css()
+
+configuration_status = get_configuration_status()
+if not configuration_status["selected_ai_configured"]:
+    selected_provider_name = (
+        "Gemini"
+        if configuration_status.get("ai_provider") == "gemini"
+        else "OpenAI"
+    )
+    st.error(f"目前選擇 {selected_provider_name}，但尚未設定對應 API Key。")
+    st.warning(
+        "尚未設定 OpenAI API Key。請先完成『開始使用與設定』，"
+        "設定完成並重新啟動後即可分析文件。"
+    )
+    if st.button("前往開始使用與設定", type="primary"):
+        st.switch_page("pages/0_開始使用與設定.py")
+    st.stop()
 
 
 def parse_uploaded_file(uploaded_file, extension: str) -> dict:
@@ -554,7 +582,7 @@ def show_chapter_learning_note(chapter_note) -> None:
             page_number = getattr(
                 image,
                 "page_number",
-                "?",
+                "未知",
             )
 
             title = getattr(
@@ -658,7 +686,9 @@ def show_chapter_learning_note(chapter_note) -> None:
 
     st.subheader("🗺️ 章節學習地圖")
 
-    mermaid = getattr(chapter_note, "mermaid", "")
+    mermaid = sanitize_mermaid_for_notion(
+        getattr(chapter_note, "mermaid", "")
+    )
     is_mermaid_valid, mermaid_error = (
         validate_mermaid(mermaid)
     )
@@ -765,7 +795,9 @@ def show_final_result(document_name: str) -> None:
 
     st.subheader("🗺️ Mermaid 圖表")
 
-    mermaid = getattr(final_result, "mermaid", "")
+    mermaid = sanitize_mermaid_for_notion(
+        getattr(final_result, "mermaid", "")
+    )
     is_mermaid_valid, mermaid_error = (
         validate_mermaid(mermaid)
     )
@@ -890,11 +922,86 @@ def _safe_int(value, default: int = 0) -> int:
         return default
 
 
+def _get_current_ai_generation_metadata() -> dict:
+    provider = str(AI_PROVIDER or "openai").strip().lower()
+    if provider == "gemini":
+        return {
+            "ai_provider": "gemini",
+            "ai_provider_label": "Gemini",
+            "ai_models": {
+                "document_analysis": GEMINI_DETAIL_MODEL,
+                "chapter_note": GEMINI_DETAIL_MODEL,
+                "pdf_visual": GEMINI_DETAIL_MODEL,
+            },
+        }
+
+    return {
+        "ai_provider": "openai",
+        "ai_provider_label": "OpenAI",
+        "ai_models": {
+            "document_analysis": OPENAI_CHUNK_MODEL,
+            "chapter_note": OPENAI_MERGE_MODEL,
+            "pdf_visual": OPENAI_MERGE_MODEL,
+        },
+    }
+
+
+def _format_ai_generation_metadata(result: dict | None = None) -> str:
+    metadata = dict(result or {})
+    if not metadata.get("ai_provider"):
+        metadata.update(_get_current_ai_generation_metadata())
+
+    label = str(
+        metadata.get("ai_provider_label")
+        or metadata.get("ai_provider")
+        or "未知"
+    )
+
+    models = metadata.get("ai_models")
+    if not isinstance(models, dict):
+        models = {}
+
+    model = str(
+        models.get("chapter_note")
+        or metadata.get("ai_model")
+        or ""
+    ).strip()
+
+    return f"{label}｜{model}" if model else label
+
+
 def _normalize_export_items(items) -> list:
     """將匯出結果安全轉換成 List。"""
 
     if items is None:
         return []
+
+    if isinstance(items, dict):
+        if any(
+            key in items
+            for key in (
+                "chapter_id",
+                "source_chapter_id",
+                "chapter_order",
+                "id",
+            )
+        ):
+            return [items]
+
+        normalized_items = []
+        for chapter_id, value in items.items():
+            if isinstance(value, dict):
+                item = dict(value)
+                item.setdefault("chapter_id", chapter_id)
+                normalized_items.append(item)
+            else:
+                normalized_items.append(
+                    {
+                        "chapter_id": chapter_id,
+                        "value": value,
+                    }
+                )
+        return normalized_items
 
     if isinstance(items, list):
         return items
@@ -1097,68 +1204,10 @@ def _calculate_export_summary(
         parent_page_url or parent_page_id
     )
 
-    # 續跑時若所有 Module 都命中完整詳細筆記快取，
-    # 且既有 Notion 父頁面仍存在，代表沒有 Module 需要重做。
-    #
-    # 舊版匯出狀態可能沒有回填 completed_chapters，
-    # 因而錯誤顯示「成功 0、等待全部」。
-    if (
-        total_count > 0
-        and processed_count == 0
-        and cached_note_count >= total_count
-        and has_notion_parent
-        and reported_failed_count == 0
-        and not any(
-            _failed_item_has_real_error(item)
-            for item in failed_items
-        )
-    ):
-        completed_ids = set(all_chapter_ids)
-        actual_failed_ids = set()
-        reported_completed_count = total_count
-        reported_pending_count = 0
-        is_finished = True
-
-    # Service 明確表示完成時，以完整章節數為準。
-    if is_finished and total_count > 0:
-        completed_ids = set(all_chapter_ids)
-        actual_failed_ids = set()
-
-    # 續跑時可能沒有重新處理任何章節，但狀態服務已判定沒有待處理。
-    if (
-        total_count > 0
-        and processed_count == 0
-        and reported_pending_count == 0
-        and reported_failed_count == 0
-        and reported_completed_count >= total_count
-    ):
-        completed_ids = set(all_chapter_ids)
-        actual_failed_ids = set()
-        is_finished = True
-
-    # 某些舊版會保留 failed_chapters，但同時回報已完成總數。
-    if (
-        total_count > 0
-        and reported_completed_count >= total_count
-    ):
-        completed_ids = set(all_chapter_ids)
-        actual_failed_ids = set()
-        is_finished = True
-
-    # failed_chapters 只有舊章節 ID、沒有實際 error，
-    # 且回傳明確表示已完成時，不再顯示為失敗。
     has_real_failed_error = any(
         _failed_item_has_real_error(item)
         for item in failed_items
     )
-
-    if (
-        is_finished
-        and not has_real_failed_error
-        and total_count > 0
-    ):
-        completed_ids = set(all_chapter_ids)
-        actual_failed_ids = set()
 
     completed_count = len(completed_ids)
     failed_count = len(actual_failed_ids)
@@ -1181,20 +1230,18 @@ def _calculate_export_summary(
         0,
     )
 
-    if is_finished and total_count > 0:
-        completed_count = total_count
-        failed_count = 0
-        pending_count = 0
-
     if (
         total_count > 0
         and completed_count >= total_count
+        and failed_count == 0
     ):
         completed_count = total_count
         failed_count = 0
         pending_count = 0
         is_finished = True
         actual_failed_ids = set()
+    else:
+        is_finished = False
 
     actual_failed_items = []
 
@@ -1614,76 +1661,6 @@ def run_document_notion_export(
             chapters=chapters,
         )
 
-        # 如果是續跑，而且預估已顯示沒有待處理章節，
-        # 但舊 Service 回傳 0 成功、舊失敗清單，
-        # 則以「續跑前狀態已全部完成」為準。
-        resume_estimate = st.session_state.get(
-            "resume_export_estimate",
-            {},
-        )
-
-        if (
-            resume
-            and isinstance(resume_estimate, dict)
-            and _safe_int(
-                resume_estimate.get(
-                    "chapter_count",
-                    0,
-                )
-            )
-            == len(chapters)
-            and _safe_int(
-                resume_estimate.get(
-                    "pending_count",
-                    0,
-                )
-            )
-            == 0
-            and _safe_int(
-                resume_estimate.get(
-                    "completed_count",
-                    0,
-                )
-            )
-            >= len(chapters)
-        ):
-            export_summary[
-                "completed_count"
-            ] = len(chapters)
-
-            export_summary[
-                "failed_count"
-            ] = 0
-
-            export_summary[
-                "pending_count"
-            ] = 0
-
-            export_summary[
-                "is_finished"
-            ] = True
-
-            export_summary[
-                "completed_chapter_ids"
-            ] = [
-                _get_source_chapter_id(
-                    chapter,
-                    index,
-                )
-                for index, chapter in enumerate(
-                    chapters,
-                    start=1,
-                )
-            ]
-
-            export_summary[
-                "failed_chapter_ids"
-            ] = []
-
-            export_summary[
-                "failed_chapters"
-            ] = []
-
         normalized_result = (
             _apply_export_summary_to_result(
                 export_result=export_result,
@@ -1745,6 +1722,11 @@ def run_document_notion_export(
                 "cached_note_count",
                 0,
             )
+        )
+
+        st.caption(
+            "本次 AI 供應商："
+            f"{_format_ai_generation_metadata(normalized_result)}"
         )
 
         if is_finished:
@@ -1817,6 +1799,7 @@ def run_document_notion_export(
         )
 
 
+@st.fragment(run_every="2s")
 def _render_active_background_job(
     session_key: str,
     result_type: str,
@@ -1847,16 +1830,10 @@ def _render_active_background_job(
         )
 
         if status in {"pending", "running"}:
-            status_col, refresh_col, cancel_col = st.columns([3, 1, 1])
+            status_col, cancel_col = st.columns([4, 1])
             status_col.caption(
                 "等待 Worker" if status == "pending" else "背景執行中"
             )
-            if refresh_col.button(
-                "更新狀態",
-                key=f"refresh_{session_key}_{job_id}",
-                width="stretch",
-            ):
-                st.rerun()
             if cancel_col.button(
                 "取消",
                 key=f"cancel_{session_key}_{job_id}",
@@ -1888,7 +1865,18 @@ def _render_active_background_job(
                     export_summary=export_summary,
                 )
                 st.session_state["document_notion_result"] = normalized_result
-                st.success("Notion 背景匯出完成，結果已載入。")
+                if export_summary.get("is_finished"):
+                    st.success("Notion 背景匯出完成，結果已載入。")
+                else:
+                    st.warning(
+                        "Notion 背景匯出尚未全部完成："
+                        f"目前完成 {export_summary.get('completed_count', 0)} / "
+                        f"{export_summary.get('total_count', 0)} 個 Module。"
+                    )
+                st.caption(
+                    "本次 AI 供應商："
+                    f"{_format_ai_generation_metadata(normalized_result)}"
+                )
             st.session_state.pop(session_key, None)
             return
 
@@ -1908,11 +1896,99 @@ def _render_active_background_job(
             st.rerun()
 
 
+def _restore_active_background_jobs(
+    document_id: str | int | None = None,
+) -> None:
+    """從 SQLite 找回關掉瀏覽器後遺失的工作狀態。"""
+
+    if (
+        st.session_state.get("active_analysis_job_id")
+        and st.session_state.get("active_notion_job_id")
+    ):
+        return
+
+    active_jobs = [
+        job
+        for job in list_background_jobs(limit=50)
+        if str(job.get("status") or "") in {"pending", "running"}
+    ]
+
+    if document_id:
+        document_key = str(document_id)
+        active_jobs = [
+            job
+            for job in active_jobs
+            if str(job.get("document_id") or "") == document_key
+        ]
+
+    for job in active_jobs:
+        job_type = str(job.get("job_type") or "")
+        job_id = str(job.get("id") or "")
+
+        if (
+            job_type == "document_analysis"
+            and job_id
+            and not st.session_state.get("active_analysis_job_id")
+        ):
+            st.session_state["active_analysis_job_id"] = job_id
+
+        if (
+            job_type == "notion_export"
+            and job_id
+            and not st.session_state.get("active_notion_job_id")
+        ):
+            st.session_state["active_notion_job_id"] = job_id
+
+
+@st.fragment(run_every="2s")
+def _render_background_job_overview() -> None:
+    """在主頁顯示仍在執行的背景工作，避免重開後誤以為重置。"""
+
+    active_jobs = [
+        job
+        for job in list_background_jobs(limit=20)
+        if str(job.get("status") or "") in {"pending", "running"}
+    ]
+
+    if not active_jobs:
+        return
+
+    with st.container(border=True):
+        st.markdown("**目前仍有背景工作在執行**")
+        st.caption(
+            "關閉瀏覽器只會清除畫面狀態，不會刪除 SQLite 佇列中的工作。"
+        )
+
+        for job in active_jobs[:3]:
+            title = str(job.get("display_name") or "背景工作")
+            status = str(job.get("status") or "")
+            percent = _safe_int(job.get("progress_percent"), 0)
+            message = str(job.get("progress_message") or "")
+            status_text = "等待中" if status == "pending" else "執行中"
+
+            st.markdown(f"{status_text}｜{title}")
+            st.progress(
+                min(max(percent, 0), 100),
+                text=message,
+            )
+
+        if len(active_jobs) > 3:
+            st.caption(f"另有 {len(active_jobs) - 3} 個背景工作。")
+
+        st.page_link(
+            "pages/6_背景工作.py",
+            label="開啟背景工作頁查看完整進度",
+        )
+
+
 st.title("📝 AI Notion 筆記整理器")
 st.caption(
     "上傳文件，自動整理成適合貼到 Notion "
     "的結構化筆記。"
 )
+
+_restore_active_background_jobs()
+_render_background_job_overview()
 
 if st.button("測試 AI 連線"):
     with st.spinner(
@@ -2560,7 +2636,7 @@ if "parsed_document" in st.session_state:
 
     for chunk in chunks:
         title = (
-            f"第 {chunk.get('chunk_id', '?')} 段｜"
+            f"第 {chunk.get('chunk_id', '未知')} 段｜"
             f"{chunk.get('character_count', 0)} 字元"
         )
 
@@ -2605,6 +2681,10 @@ if "parsed_document" in st.session_state:
         document_name=current_file_name,
         chapters=chapters,
         parsed_document=parsed_document,
+    )
+
+    _restore_active_background_jobs(
+        document_id=current_document_id,
     )
 
     _render_active_background_job(
@@ -2812,6 +2892,11 @@ if "parsed_document" in st.session_state:
                 "開啟 Notion 詳細學習筆記",
                 parent_page_url,
             )
+
+        st.caption(
+            "AI 供應商："
+            f"{_format_ai_generation_metadata(document_notion_result)}"
+        )
 
         result_col1, result_col2 = (
             st.columns(2)

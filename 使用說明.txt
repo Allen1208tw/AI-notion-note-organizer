@@ -1,0 +1,88 @@
+AI Notion 筆記整理器｜快速使用說明
+====================================
+
+一、首次設定
+------------
+
+1. 啟動 AI Notion 筆記整理器。
+2. 在左側開啟「開始使用與設定」。
+3. 輸入 OpenAI API Key。
+4. 若要匯出到 Notion，再輸入 Notion Integration Token 與父頁網址。
+5. 按「儲存設定」，再按「套用設定並重新啟動」。
+
+API Key 只會保存在這台電腦的 .env，不會上傳到 GitHub，也不會包進安裝檔。
+
+二、必要設定
+------------
+
+OPENAI_API_KEY
+文件摘要、章節筆記、Quiz、Flash Card 與圖片分析都需要 OpenAI API Key。
+
+NOTION_API_KEY
+只有匯出 Notion 時需要。請在 Notion 建立 Integration，取得 Internal Integration Token。
+
+NOTION_PARENT_PAGE_ID
+建立一個 Notion 空白父頁，把該頁分享給 Integration，然後在設定頁貼上完整頁面網址即可。
+
+三、進階參數
+------------
+
+分段分析模型
+處理每一個 Chunk 的模型。預設：gpt-5-mini。
+
+整體合併與詳細筆記模型
+合併整份結果及建立章節詳細筆記。預設：gpt-5。
+
+最大上傳檔案大小
+限制可上傳文件大小。預設：25 MB。
+
+Chunk 大小
+每段送給 AI 的文字長度。預設：6000 字元。
+
+Chunk 重疊字數
+相鄰段落保留的共同文字，避免語意在切割處中斷。預設：500，必須小於 Chunk 大小。
+
+四、基本使用流程
+----------------
+
+上傳文件
+→ 偵測主章節
+→ 執行背景分析
+→ 建立詳細學習筆記
+→ 匯出 Notion
+→ 同步 Quiz 與 Flash Card
+→ 練習並查看儀表板
+
+五、個人資料位置
+----------------
+
+%LOCALAPPDATA%\AI Notion Note Organizer\
+
+此資料夾包含 .env、SQLite、快取、背景工作與更新檔。重新安裝或更新不會刪除這些資料。
+
+請勿公開：
+
+.env
+outputs\learning_system.db
+包含私人內容的快取或匯出檔
+
+六、更新
+--------
+
+在「關於與更新」頁按「立即檢查更新」。下載後會比對 GitHub Release 的 SHA-256，再由使用者確認安裝。
+
+七、常見問題
+------------
+
+無法分析文件
+請確認 OpenAI Key 已設定、帳戶可使用 API，並重新啟動應用程式。
+
+無法匯出 Notion
+請確認 Token、父頁網址，以及父頁是否已分享給 Integration。
+
+設定後沒有生效
+回到「開始使用與設定」，按「套用設定並重新啟動」。
+
+背景工作沒有進行
+請保持啟動器視窗開啟，並到「背景工作」頁查看錯誤。
+

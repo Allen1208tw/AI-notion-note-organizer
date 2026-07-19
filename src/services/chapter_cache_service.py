@@ -1,5 +1,6 @@
 import hashlib
 import json
+import base64
 import re
 from datetime import datetime
 from pathlib import Path
@@ -130,6 +131,124 @@ def _remove_image_data_url(visual_context: list[dict]) -> list[dict]:
         cleaned_items.append(cleaned_item)
 
     return cleaned_items
+
+
+def _decode_image_data_url(
+    data_url: str,
+) -> tuple[bytes, str]:
+    header, separator, payload = str(data_url or "").partition(",")
+
+    if not separator or "base64" not in header:
+        raise ValueError("圖片資料不是 Base64 Data URL。")
+
+    mime_type = (
+        header.replace("data:", "")
+        .replace(";base64", "")
+        .strip()
+        or "image/png"
+    )
+
+    return base64.b64decode(payload), mime_type
+
+
+def _image_extension(mime_type: str) -> str:
+    normalized = str(mime_type or "").lower()
+    if normalized == "image/jpeg":
+        return ".jpg"
+    if normalized == "image/webp":
+        return ".webp"
+    return ".png"
+
+
+def _write_visual_image_files(
+    visual_context: list[dict],
+    cache_path: Path,
+) -> list[dict]:
+    """
+    將 Data URL 圖片另存成檔案，JSON 只保留相對路徑。
+
+    這樣詳細筆記快取不會變得巨大，但續跑或背景工作重開後，
+    Notion 匯出仍能讀回真正圖片。
+    """
+
+    image_dir = cache_path.with_suffix("")
+    image_dir = image_dir.parent / f"{image_dir.name}_images"
+    cleaned_items = []
+
+    for index, item in enumerate(visual_context or [], start=1):
+        if not isinstance(item, dict):
+            continue
+
+        cleaned_item = dict(item)
+        data_url = str(cleaned_item.pop("image_data_url", "") or "").strip()
+
+        if data_url.startswith("data:image/"):
+            try:
+                image_bytes, mime_type = _decode_image_data_url(data_url)
+                digest = hashlib.sha256(image_bytes).hexdigest()[:16]
+                extension = _image_extension(mime_type)
+                image_dir.mkdir(parents=True, exist_ok=True)
+                image_path = image_dir / f"page_{index}_{digest}{extension}"
+                if not image_path.exists():
+                    image_path.write_bytes(image_bytes)
+
+                cleaned_item["image_cache_path"] = str(
+                    image_path.relative_to(cache_path.parent)
+                )
+                cleaned_item["image_mime_type"] = mime_type
+
+            except Exception:
+                pass
+
+        cleaned_items.append(cleaned_item)
+
+    return cleaned_items
+
+
+def _restore_visual_image_data_urls(
+    visual_context: Any,
+    cache_path: Path,
+) -> list[dict]:
+    restored_items = []
+
+    if not isinstance(visual_context, list):
+        return restored_items
+
+    for item in visual_context:
+        if not isinstance(item, dict):
+            continue
+
+        restored_item = dict(item)
+
+        if not restored_item.get("image_data_url"):
+            image_cache_path = str(
+                restored_item.get("image_cache_path") or ""
+            ).strip()
+
+            if image_cache_path:
+                image_path = (cache_path.parent / image_cache_path).resolve()
+                try:
+                    cache_parent = cache_path.parent.resolve()
+                    if (
+                        image_path == cache_parent
+                        or cache_parent in image_path.parents
+                    ) and image_path.exists():
+                        mime_type = str(
+                            restored_item.get("image_mime_type")
+                            or "image/png"
+                        )
+                        encoded = base64.b64encode(
+                            image_path.read_bytes()
+                        ).decode("utf-8")
+                        restored_item["image_data_url"] = (
+                            f"data:{mime_type};base64,{encoded}"
+                        )
+                except OSError:
+                    pass
+
+        restored_items.append(restored_item)
+
+    return restored_items
 
 
 def _text_is_meaningful(value: Any) -> bool:
@@ -386,7 +505,11 @@ def _find_chapter_cache_fallback(
     fallback 順序：
     1. chapter_id / source_chapter_id / chapter_order
     2. ChapterLearningNote.chapter_title
-    3. 只有一個快取檔時直接使用
+
+    注意：不能因為資料夾裡只有一個快取檔就直接使用。
+    完整文件第一次生成時，第 1 章會先產生快取；若第 2 章
+    找不到精準快取又套用唯一快取檔，就會把所有章節都變成
+    第 1 章內容。
     """
 
     document_dir = (
@@ -436,9 +559,6 @@ def _find_chapter_cache_fallback(
         )
 
         return scored_candidates[0][2]
-
-    if len(cache_files) == 1:
-        return cache_files[0]
 
     return None
 
@@ -507,12 +627,10 @@ def _parse_cache_data(
 
     return {
         "visual_context": (
-            visual_context
-            if isinstance(
-                visual_context,
-                list,
+            _restore_visual_image_data_urls(
+                visual_context=visual_context,
+                cache_path=cache_path,
             )
-            else []
         ),
         "visual_cached": visual_cached,
         "chapter_note": chapter_note,
@@ -614,7 +732,10 @@ def save_visual_context_cache(
     cache_data = _read_cache_file(cache_path)
 
     cache_data["visual_analysis_completed"] = True
-    cache_data["visual_context"] = _remove_image_data_url(visual_context)
+    cache_data["visual_context"] = _write_visual_image_files(
+        visual_context=visual_context,
+        cache_path=cache_path,
+    )
     cache_data["updated_at"] = datetime.utcnow().isoformat()
 
     _write_cache_file(cache_path, cache_data)

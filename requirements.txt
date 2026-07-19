@@ -1,5 +1,6 @@
 ﻿streamlit
 openai
+google-genai
 pymupdf
 python-docx
 python-dotenv

@@ -101,6 +101,7 @@ def _run_notion_export(job_id: str, payload: dict) -> dict:
         progress_callback=progress,
         max_visual_pages=3,
         resume=resume,
+        document_id=document_id,
     )
     if not isinstance(result, dict):
         raise TypeError("Notion 匯出結果格式錯誤，預期為 dict。")

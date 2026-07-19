@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import sys
 from pathlib import Path
 
@@ -33,18 +34,28 @@ def get_data_dir() -> Path:
 
 def get_env_file(resource_dir: Path, data_dir: Path) -> Path:
     override = os.getenv("AI_NOTION_ENV_FILE", "").strip()
-    candidates = []
     if override:
-        candidates.append(Path(override).expanduser())
-    candidates.append(data_dir / ".env")
-    if is_frozen_application():
-        candidates.append(Path(sys.executable).resolve().parent / ".env")
-    candidates.append(resource_dir / ".env")
+        return Path(override).expanduser().resolve()
 
-    for candidate in candidates:
+    data_env = data_dir / ".env"
+    if data_env.exists():
+        return data_env.resolve()
+
+    legacy_candidates = []
+    if is_frozen_application():
+        legacy_candidates.append(Path(sys.executable).resolve().parent / ".env")
+    legacy_candidates.append(resource_dir / ".env")
+
+    for candidate in legacy_candidates:
         if candidate.exists():
-            return candidate.resolve()
-    return (data_dir / ".env").resolve()
+            data_env.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                shutil.copy2(candidate, data_env)
+                return data_env.resolve()
+            except OSError:
+                return candidate.resolve()
+
+    return data_env.resolve()
 
 
 RESOURCE_DIR = get_resource_dir()

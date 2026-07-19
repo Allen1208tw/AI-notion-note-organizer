@@ -11,7 +11,14 @@ from notion_client import Client
 from sqlalchemy import select
 
 
-from src.config.settings import NOTION_API_KEY, NOTION_PARENT_PAGE_ID
+from src.config.settings import (
+    AI_PROVIDER,
+    GEMINI_DETAIL_MODEL,
+    NOTION_API_KEY,
+    NOTION_PARENT_PAGE_ID,
+    OPENAI_CHUNK_MODEL,
+    OPENAI_MERGE_MODEL,
+)
 from src.models.chapter_models import (
     ChapterFlashcardItem,
     ChapterLearningNote,
@@ -36,12 +43,14 @@ from src.services.export_state_service import (
     set_parent_page,
 )
 from src.services.pdf_visual_service import analyze_chapter_visuals
+from src.processors.pdf_visual_extractor import render_pdf_pages_to_base64
 from src.database.database import get_database_session
 from src.database.models import Document
 from src.services.learning_database_service import (
     count_chapter_learning_items,
     save_chapter_learning_items,
 )
+from src.validators.mermaid_validator import sanitize_mermaid_for_notion
 
 
 MAX_RICH_TEXT_LENGTH = 1800
@@ -50,6 +59,60 @@ MAX_BLOCKS_PER_REQUEST = 80
 
 NOTION_API_VERSION = "2026-03-11"
 MAX_NOTION_IMAGE_BYTES = 20 * 1024 * 1024
+
+
+def _get_ai_generation_metadata() -> dict:
+    provider = str(AI_PROVIDER or "openai").strip().lower()
+    if provider == "gemini":
+        return {
+            "ai_provider": "gemini",
+            "ai_provider_label": "Gemini",
+            "ai_models": {
+                "document_analysis": GEMINI_DETAIL_MODEL,
+                "chapter_note": GEMINI_DETAIL_MODEL,
+                "pdf_visual": GEMINI_DETAIL_MODEL,
+            },
+        }
+
+    return {
+        "ai_provider": "openai",
+        "ai_provider_label": "OpenAI",
+        "ai_models": {
+            "document_analysis": OPENAI_CHUNK_MODEL,
+            "chapter_note": OPENAI_MERGE_MODEL,
+            "pdf_visual": OPENAI_MERGE_MODEL,
+        },
+    }
+
+
+def _completed_item_has_notion_page(item) -> bool:
+    if not isinstance(item, dict):
+        return False
+
+    return bool(
+        str(
+            item.get("notion_page_id")
+            or item.get("notion_page_url")
+            or item.get("notion_url")
+            or ""
+        ).strip()
+    )
+
+
+def _export_state_completed_ids(
+    state: dict,
+    valid_chapter_ids: set[str],
+) -> set[str]:
+    completed = state.get("completed_chapters", {})
+    if not isinstance(completed, dict):
+        return set()
+
+    return {
+        str(chapter_id).strip()
+        for chapter_id, item in completed.items()
+        if str(chapter_id).strip() in valid_chapter_ids
+        and _completed_item_has_notion_page(item)
+    }
 
 
 def _toggle(
@@ -1023,6 +1086,12 @@ def _code_block(
     }
 
 
+def _clean_mermaid_code(mermaid: str) -> str:
+    """移除 Markdown fence，讓 Notion 以 Mermaid code block 渲染。"""
+
+    return sanitize_mermaid_for_notion(mermaid)
+
+
 def _divider() -> dict:
     """建立 divider block。"""
 
@@ -1402,11 +1471,15 @@ def _build_chapter_note_blocks(
         _heading_2("🗺️ 章節學習地圖")
     )
 
-    if chapter_note.mermaid:
+    mermaid_code = _clean_mermaid_code(
+        chapter_note.mermaid
+    )
+
+    if mermaid_code:
         blocks.append(
             _code_block(
-                code=chapter_note.mermaid,
-                language="plain text",
+                code=mermaid_code,
+                language="mermaid",
             )
         )
     else:
@@ -1792,6 +1865,7 @@ def _get_visual_context(
     chapter: dict,
     parsed_document: dict,
     cached_data: dict,
+    force_regenerate_visual: bool = False,
 ) -> tuple[list[dict], bool]:
     """
     取得 PDF 視覺分析內容。
@@ -1810,8 +1884,58 @@ def _get_visual_context(
         and parsed_document.get("page_texts")
     )
 
-    if cached_data.get("visual_cached"):
-        return cached_data.get("visual_context", []), True
+    if cached_data.get("visual_cached") and not force_regenerate_visual:
+        visual_context = cached_data.get("visual_context", [])
+
+        needs_image_hydration = (
+            is_pdf
+            and has_pdf_data
+            and any(
+                isinstance(item, dict)
+                and item.get("page_number")
+                and not _find_visual_image_data_url(item)
+                for item in visual_context
+            )
+        )
+
+        if needs_image_hydration:
+            page_numbers = []
+            for item in visual_context:
+                if not isinstance(item, dict):
+                    continue
+                try:
+                    page_number = int(item.get("page_number") or 0)
+                except (TypeError, ValueError):
+                    page_number = 0
+                if page_number > 0 and page_number not in page_numbers:
+                    page_numbers.append(page_number)
+
+            if page_numbers:
+                rendered_pages = render_pdf_pages_to_base64(
+                    pdf_bytes=parsed_document["pdf_bytes"],
+                    page_numbers=page_numbers,
+                    zoom=1.4,
+                    max_pages=len(page_numbers),
+                )
+                image_map = {
+                    page["page_number"]: page["image_data_url"]
+                    for page in rendered_pages
+                }
+                hydrated_context = []
+                for item in visual_context:
+                    hydrated_item = dict(item)
+                    page_number = hydrated_item.get("page_number")
+                    if page_number in image_map:
+                        hydrated_item["image_data_url"] = image_map[page_number]
+                    hydrated_context.append(hydrated_item)
+                visual_context = hydrated_context
+                save_visual_context_cache(
+                    document_name=document_name,
+                    chapter=chapter,
+                    visual_context=visual_context,
+                )
+
+        return visual_context, True
 
     if not is_pdf or not has_pdf_data:
         save_visual_context_cache(
@@ -2361,19 +2485,37 @@ def create_document_learning_notebook(
 
     notion = _get_notion_client()
     chapter_count = len(chapters)
+    ai_metadata = _get_ai_generation_metadata()
+    valid_chapter_ids = {
+        str(
+            chapter.get("chapter_id")
+            or chapter.get("source_chapter_id")
+            or chapter.get("chapter_order")
+            or index
+        ).strip()
+        for index, chapter in enumerate(chapters, start=1)
+    }
 
     resolved_document_id = _resolve_document_id(
         document_name=document_name,
         document_id=document_id,
     )
 
-    sqlite_sync_summary = (
-        _sync_cached_notes_to_sqlite(
+    sqlite_sync_summary = {
+        "synced_chapter_count": 0,
+        "skipped_chapter_count": 0,
+        "failed_chapter_count": 0,
+        "synced_quiz_count": 0,
+        "synced_flashcard_count": 0,
+        "errors": [],
+    }
+
+    if resume:
+        sqlite_sync_summary = _sync_cached_notes_to_sqlite(
             document_name=document_name,
             document_id=resolved_document_id,
             chapters=chapters,
         )
-    )
 
     if not resume:
         _safe_reset_export_state(
@@ -2437,15 +2579,29 @@ def create_document_learning_notebook(
     processed_chapter_count = 0
 
     if total_count == 0:
-        _safe_mark_export_finished(
-            document_name=document_name,
-            state=export_state,
-        )
-
         final_state = _safe_load_export_state(
             document_name=document_name,
             chapter_count=chapter_count,
         )
+        completed_ids = _export_state_completed_ids(
+            final_state,
+            valid_chapter_ids,
+        )
+        is_finished = (
+            chapter_count > 0
+            and len(completed_ids) >= chapter_count
+        )
+
+        if is_finished:
+            _safe_mark_export_finished(
+                document_name=document_name,
+                state=final_state,
+            )
+
+            final_state = _safe_load_export_state(
+                document_name=document_name,
+                chapter_count=chapter_count,
+            )
 
         return {
             "document_name": document_name,
@@ -2460,6 +2616,11 @@ def create_document_learning_notebook(
                 [],
             ),
             "processed_chapter_count": 0,
+            "completed_chapter_count": len(completed_ids),
+            "pending_chapter_count": max(
+                chapter_count - len(completed_ids),
+                0,
+            ),
             "cached_visual_count": 0,
             "cached_note_count": 0,
             "regenerated_note_count": 0,
@@ -2487,7 +2648,8 @@ def create_document_learning_notebook(
                 "errors",
                 [],
             ),
-            "is_finished": True,
+            "is_finished": is_finished,
+            **ai_metadata,
         }
 
     for index, chapter in enumerate(pending_chapters, start=1):
@@ -2524,14 +2686,18 @@ def create_document_learning_notebook(
                 chapter=chapter,
                 parsed_document=parsed_document,
                 cached_data=cached_data,
+                force_regenerate_visual=not resume,
             )
 
             if visual_used_cache:
                 cached_visual_count += 1
 
-            force_regenerate_note = bool(
-                cached_data.get("note_cached")
-                and not cached_data.get("note_cache_valid")
+            force_regenerate_note = (
+                not resume
+                or bool(
+                    cached_data.get("note_cached")
+                    and not cached_data.get("note_cache_valid")
+                )
             )
 
             chapter_note, note_used_cache = _get_chapter_note(
@@ -2708,7 +2874,16 @@ def create_document_learning_notebook(
         chapters=chapters,
     )
 
-    is_finished = len(remaining_pending) == 0
+    completed_ids = _export_state_completed_ids(
+        final_state,
+        valid_chapter_ids,
+    )
+
+    is_finished = (
+        chapter_count > 0
+        and len(completed_ids) >= chapter_count
+        and len(remaining_pending) == 0
+    )
 
     if is_finished:
         _safe_mark_export_finished(
@@ -2736,6 +2911,11 @@ def create_document_learning_notebook(
         "completed_this_run": completed_this_run,
         "failed_this_run": failed_this_run,
         "processed_chapter_count": processed_chapter_count,
+        "completed_chapter_count": len(completed_ids),
+        "pending_chapter_count": max(
+            chapter_count - len(completed_ids),
+            0,
+        ),
         "cached_visual_count": cached_visual_count,
         "cached_note_count": cached_note_count,
         "regenerated_note_count": regenerated_note_count,
@@ -2764,5 +2944,6 @@ def create_document_learning_notebook(
             [],
         ),
         "is_finished": is_finished,
+        **ai_metadata,
         "updated_at": datetime.utcnow().isoformat(),
     }

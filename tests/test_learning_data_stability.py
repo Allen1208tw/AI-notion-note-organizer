@@ -282,6 +282,22 @@ class LearningDataStabilityTests(unittest.TestCase):
             self.assertEqual(session.query(QuizAttempt).count(), 1)
             self.assertEqual(session.query(FlashcardReview).count(), 1)
 
+    def test_export_result_accepts_string_chapter_items(self) -> None:
+        database_service.update_document_export_result(
+            "document-1",
+            {
+                "completed_chapters": ["1"],
+                "failed_chapters": ["1"],
+            },
+        )
+
+        with self.session_factory() as session:
+            document = session.get(Document, "document-1")
+            chapter = session.get(Chapter, "chapter-1")
+
+            self.assertEqual(document.export_status, "completed")
+            self.assertEqual(chapter.export_status, "completed")
+
 
 if __name__ == "__main__":
     unittest.main()

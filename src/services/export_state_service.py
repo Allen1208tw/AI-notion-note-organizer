@@ -170,6 +170,14 @@ def load_export_state(
     state.setdefault("failed_chapters", {})
     state.setdefault("is_finished", False)
 
+    completed_count = sum(
+        1
+        for item in state.get("completed_chapters", {}).values()
+        if _completed_item_has_notion_page(item)
+    )
+    if completed_count < chapter_count:
+        state["is_finished"] = False
+
     return state
 
 
@@ -220,7 +228,9 @@ def mark_chapter_completed(
     state: dict[str, Any],
     chapter_id: str | int,
     chapter_title: str,
-    notion_url: str,
+    notion_url: str = "",
+    notion_page_id: str = "",
+    notion_page_url: str = "",
 ) -> dict[str, Any]:
     """
     記錄某個 Module 已成功建立。
@@ -228,9 +238,15 @@ def mark_chapter_completed(
 
     chapter_key = str(chapter_id)
 
+    page_url = str(notion_page_url or notion_url or "").strip()
+    page_id = str(notion_page_id or "").strip()
+
     state["completed_chapters"][chapter_key] = {
+        "chapter_id": chapter_key,
         "chapter_title": chapter_title,
-        "notion_url": notion_url,
+        "notion_page_id": page_id,
+        "notion_page_url": page_url,
+        "notion_url": page_url,
         "completed_at": datetime.now().isoformat(
             timespec="seconds"
         ),
@@ -251,7 +267,8 @@ def mark_chapter_failed(
     state: dict[str, Any],
     chapter_id: str | int,
     chapter_title: str,
-    error_message: str,
+    error_message: str = "",
+    error: str = "",
 ) -> dict[str, Any]:
     """
     記錄某個 Module 匯出失敗。
@@ -260,8 +277,9 @@ def mark_chapter_failed(
     chapter_key = str(chapter_id)
 
     state["failed_chapters"][chapter_key] = {
+        "chapter_id": chapter_key,
         "chapter_title": chapter_title,
-        "error": error_message,
+        "error": str(error or error_message or ""),
         "failed_at": datetime.now().isoformat(
             timespec="seconds"
         ),
@@ -285,10 +303,12 @@ def is_chapter_completed(
 
     chapter_key = str(chapter_id)
 
-    return chapter_key in state.get(
+    item = state.get(
         "completed_chapters",
         {},
-    )
+    ).get(chapter_key)
+
+    return _completed_item_has_notion_page(item)
 
 
 def get_pending_chapters(
@@ -303,8 +323,13 @@ def get_pending_chapters(
 
     pending_chapters = []
 
-    for chapter in chapters:
-        chapter_id = chapter.get("chapter_id")
+    for index, chapter in enumerate(chapters, start=1):
+        chapter_id = (
+            chapter.get("chapter_id")
+            or chapter.get("source_chapter_id")
+            or chapter.get("chapter_order")
+            or index
+        )
 
         if not is_chapter_completed(
             state=state,
@@ -331,3 +356,17 @@ def mark_export_finished(
     )
 
     return state
+
+
+def _completed_item_has_notion_page(item: Any) -> bool:
+    if not isinstance(item, dict):
+        return False
+
+    return bool(
+        str(
+            item.get("notion_page_id")
+            or item.get("notion_page_url")
+            or item.get("notion_url")
+            or ""
+        ).strip()
+    )

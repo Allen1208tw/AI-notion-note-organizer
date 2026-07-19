@@ -74,3 +74,23 @@ OpenAI Key 與 Notion Token 存在 `.env`，備份與版本控制應排除 `.env
 | 同步長任務 | Celery/RQ/雲端工作佇列 |
 | 單一使用者 | OAuth/Email Login + tenant/user_id |
 | Batch Launcher | Docker + CI/CD + HTTPS Hosting |
+
+## AI 供應商切換
+
+`AI_PROVIDER` 可選 `openai` 或 `gemini`。選擇 `gemini` 後，文件 Chunk 摘要、合併摘要、章節詳細筆記、Quiz、Flash Cards、Mermaid 內容，以及 PDF 圖片視覺分析都會改由 Gemini 產生。OpenAI 模式仍保留作為高品質或備援選項。
+
+Gemini 相關設定：
+
+```text
+AI_PROVIDER=gemini
+GEMINI_API_KEY=your_gemini_api_key
+GEMINI_DETAIL_MODEL=gemini-3.5-flash
+```
+
+Gemini SDK 使用 `google-genai`。設定頁會儲存 Gemini Key 到 AppData 的 `.env`，封裝版也會把 SDK 一起包入安裝檔。
+
+## Windows 安裝與更新
+
+Windows 版本使用 PyInstaller 打包執行檔，並用 Inno Setup 建立單一安裝程式。安裝程式使用固定 `AppId` 與固定安裝目錄，因此使用者下載新版 `AI_Notion_Note_Organizer_Setup.exe` 後，可以直接執行新版安裝檔覆蓋更新。
+
+更新時只替換 `{localappdata}\Programs\AI Notion Note Organizer` 裡的程式檔案，不會刪除 `{localappdata}\AI Notion Note Organizer` 內的使用者資料。API Key、SQLite、快取、輸出檔案與背景工作狀態會保留下來。

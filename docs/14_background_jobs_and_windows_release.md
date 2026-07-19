@@ -73,6 +73,8 @@ flowchart LR
 
 因此新版安裝程式可以覆蓋程式檔，卻不會覆蓋 API Key、SQLite、快取或學習紀錄。`runtime_paths.py` 負責區分開發與封裝環境。
 
+安裝目錄包含 `使用說明.txt`，開始功能表提供使用說明捷徑。使用者不必手動編輯 `.env`：網頁「開始使用與設定」會呼叫 `app_configuration_service.py` 寫入個人資料目錄，並要求 Launcher 重新啟動 Streamlit 與 Worker 套用新值。
+
 ## 建置 Release
 
 首次安裝建置工具：

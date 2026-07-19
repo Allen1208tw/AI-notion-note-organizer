@@ -1,11 +1,17 @@
 import json
 from collections.abc import Callable
 
-from src.config.settings import OPENAI_CHUNK_MODEL, OPENAI_MERGE_MODEL
+from src.config.settings import (
+    AI_PROVIDER,
+    GEMINI_DETAIL_MODEL,
+    OPENAI_CHUNK_MODEL,
+    OPENAI_MERGE_MODEL,
+)
 from src.models.analysis_models import AnalysisResult, ChunkAnalysisResult
 from src.prompts.chunk_prompt import build_chunk_prompt
 from src.prompts.merge_prompt import build_merge_prompt
 from src.prompts.system_prompt import SYSTEM_PROMPT
+from src.services.gemini_service import generate_gemini_text
 from src.services.openai_service import get_openai_client
 
 
@@ -33,15 +39,22 @@ def _extract_json(raw_text: str) -> dict:
 def _request_json(model: str, prompt: str) -> dict:
     """向 OpenAI 請求 JSON；失敗時自動重試一次。"""
 
-    client = get_openai_client()
-
-    response = client.responses.create(
-        model=model,
-        instructions=SYSTEM_PROMPT,
-        input=prompt,
-    )
-
-    raw_text = response.output_text.strip()
+    provider = str(AI_PROVIDER or "openai").strip().lower()
+    if provider == "gemini":
+        raw_text = generate_gemini_text(
+            model=GEMINI_DETAIL_MODEL,
+            system_instruction=SYSTEM_PROMPT,
+            prompt=prompt,
+            temperature=0.2,
+        ).strip()
+    else:
+        client = get_openai_client()
+        response = client.responses.create(
+            model=model,
+            instructions=SYSTEM_PROMPT,
+            input=prompt,
+        )
+        raw_text = response.output_text.strip()
 
     try:
         return _extract_json(raw_text)
@@ -59,13 +72,20 @@ def _request_json(model: str, prompt: str) -> dict:
 {prompt}
 """
 
-        retry_response = client.responses.create(
-            model=model,
-            instructions=SYSTEM_PROMPT,
-            input=retry_prompt,
-        )
-
-        retry_raw_text = retry_response.output_text.strip()
+        if provider == "gemini":
+            retry_raw_text = generate_gemini_text(
+                model=GEMINI_DETAIL_MODEL,
+                system_instruction=SYSTEM_PROMPT,
+                prompt=retry_prompt,
+                temperature=0.0,
+            ).strip()
+        else:
+            retry_response = client.responses.create(
+                model=model,
+                instructions=SYSTEM_PROMPT,
+                input=retry_prompt,
+            )
+            retry_raw_text = retry_response.output_text.strip()
 
         try:
             return _extract_json(retry_raw_text)

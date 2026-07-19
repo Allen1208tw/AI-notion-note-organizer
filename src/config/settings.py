@@ -14,6 +14,11 @@ NOTION_API_KEY = os.getenv("NOTION_API_KEY", "")
 NOTION_PARENT_PAGE_ID = os.getenv("NOTION_PARENT_PAGE_ID", "")
 OPENAI_MERGE_MODEL = os.getenv("OPENAI_MERGE_MODEL", "gpt-5")
 OPENAI_MODEL = OPENAI_CHUNK_MODEL
+AI_PROVIDER = os.getenv("AI_PROVIDER", "openai").strip().lower()
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+GEMINI_DETAIL_MODEL = os.getenv("GEMINI_DETAIL_MODEL", "gemini-3.5-flash")
+if GEMINI_DETAIL_MODEL == "gemini-2.5-flash":
+    GEMINI_DETAIL_MODEL = "gemini-3.5-flash"
 
 MAX_FILE_SIZE_MB = int(os.getenv("MAX_FILE_SIZE_MB", "25"))
 CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "6000"))

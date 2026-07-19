@@ -1,9 +1,10 @@
 import json
 
-from src.config.settings import OPENAI_MERGE_MODEL
+from src.config.settings import AI_PROVIDER, GEMINI_DETAIL_MODEL, OPENAI_MERGE_MODEL
 from src.models.chapter_models import ChapterLearningNote
 from src.prompts.chapter_prompt import build_chapter_prompt
 from src.prompts.system_prompt import SYSTEM_PROMPT
+from src.services.gemini_service import generate_gemini_text
 from src.services.openai_service import get_openai_client
 
 
@@ -28,18 +29,33 @@ def _extract_json(raw_text: str) -> dict:
     return json.loads(json_text)
 
 
-def _request_chapter_note(prompt: str) -> dict:
-    """呼叫 OpenAI 產生章節詳細學習筆記。"""
-
+def _request_openai_chapter_note(prompt: str) -> str:
     client = get_openai_client()
-
     response = client.responses.create(
         model=OPENAI_MERGE_MODEL,
         instructions=SYSTEM_PROMPT,
         input=prompt,
     )
+    return response.output_text
 
-    raw_text = response.output_text
+
+def _request_gemini_chapter_note(prompt: str) -> str:
+    return generate_gemini_text(
+        model=GEMINI_DETAIL_MODEL,
+        system_instruction=SYSTEM_PROMPT,
+        prompt=prompt,
+        temperature=0.2,
+    )
+
+
+def _request_chapter_note(prompt: str) -> dict:
+    """呼叫 OpenAI 產生章節詳細學習筆記。"""
+
+    provider = str(AI_PROVIDER or "openai").strip().lower()
+    if provider == "gemini":
+        raw_text = _request_gemini_chapter_note(prompt)
+    else:
+        raw_text = _request_openai_chapter_note(prompt)
 
     try:
         return _extract_json(raw_text)
@@ -59,13 +75,10 @@ def _request_chapter_note(prompt: str) -> dict:
 {prompt}
 """
 
-        retry_response = client.responses.create(
-            model=OPENAI_MERGE_MODEL,
-            instructions=SYSTEM_PROMPT,
-            input=retry_prompt,
-        )
-
-        retry_raw_text = retry_response.output_text
+        if provider == "gemini":
+            retry_raw_text = _request_gemini_chapter_note(retry_prompt)
+        else:
+            retry_raw_text = _request_openai_chapter_note(retry_prompt)
 
         try:
             return _extract_json(retry_raw_text)

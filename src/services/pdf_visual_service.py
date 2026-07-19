@@ -1,8 +1,9 @@
-from src.config.settings import OPENAI_MERGE_MODEL
+from src.config.settings import AI_PROVIDER, GEMINI_DETAIL_MODEL, OPENAI_MERGE_MODEL
 from src.processors.pdf_visual_extractor import (
     render_pdf_pages_to_base64,
     select_representative_pages,
 )
+from src.services.gemini_service import generate_gemini_multimodal_text
 from src.services.openai_service import get_openai_client
 
 
@@ -274,6 +275,29 @@ def analyze_chapter_visuals(
                 "type": "input_image",
                 "image_url": rendered_page["image_data_url"],
             }
+        )
+
+    provider = str(AI_PROVIDER or "openai").strip().lower()
+    if provider == "gemini":
+        raw_text = generate_gemini_multimodal_text(
+            model=GEMINI_DETAIL_MODEL,
+            prompt=str(content[0].get("text") or ""),
+            image_data_urls=[
+                item["image_data_url"]
+                for item in rendered_pages
+                if item.get("image_data_url")
+            ],
+            temperature=0.2,
+        ).strip()
+
+        if not raw_text:
+            return []
+
+        visual_context = _parse_visual_response(raw_text)
+
+        return _attach_page_images(
+            visual_context=visual_context,
+            rendered_pages=rendered_pages,
         )
 
     client = get_openai_client()
