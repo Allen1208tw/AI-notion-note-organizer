@@ -757,3 +757,101 @@ class WeakPoint(Base):
     quiz: Mapped["Quiz"] = relationship(
         back_populates="weak_points",
     )
+
+
+class BackgroundJob(Base):
+    """可跨 Streamlit rerun 保存的背景工作。"""
+
+    __tablename__ = "background_jobs"
+
+    id: Mapped[str] = mapped_column(
+        String(36),
+        primary_key=True,
+        default=create_uuid,
+    )
+
+    job_type: Mapped[str] = mapped_column(
+        String(50),
+        nullable=False,
+        index=True,
+    )
+
+    status: Mapped[str] = mapped_column(
+        String(20),
+        default="pending",
+        nullable=False,
+        index=True,
+    )
+
+    document_id: Mapped[Optional[str]] = mapped_column(
+        String(36),
+        nullable=True,
+        index=True,
+    )
+
+    display_name: Mapped[str] = mapped_column(
+        String(500),
+        nullable=False,
+    )
+
+    payload_path: Mapped[str] = mapped_column(
+        Text,
+        nullable=False,
+    )
+
+    result_path: Mapped[Optional[str]] = mapped_column(
+        Text,
+        nullable=True,
+    )
+
+    progress_current: Mapped[int] = mapped_column(
+        Integer,
+        default=0,
+        nullable=False,
+    )
+
+    progress_total: Mapped[int] = mapped_column(
+        Integer,
+        default=1,
+        nullable=False,
+    )
+
+    progress_message: Mapped[str] = mapped_column(
+        String(1000),
+        default="等待背景工作處理",
+        nullable=False,
+    )
+
+    error_message: Mapped[Optional[str]] = mapped_column(
+        Text,
+        nullable=True,
+    )
+
+    cancel_requested: Mapped[bool] = mapped_column(
+        Boolean,
+        default=False,
+        nullable=False,
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=utc_now,
+        nullable=False,
+    )
+
+    started_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime,
+        nullable=True,
+    )
+
+    finished_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime,
+        nullable=True,
+    )
+
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=utc_now,
+        onupdate=utc_now,
+        nullable=False,
+    )

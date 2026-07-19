@@ -7,14 +7,18 @@ import os
 import socket
 import subprocess
 import sys
+import threading
 import time
 import webbrowser
 from pathlib import Path
 
 
-PROJECT_DIR = Path(__file__).resolve().parent
+from src.config.runtime_paths import OUTPUT_DIR, RESOURCE_DIR, is_frozen_application
+
+
+PROJECT_DIR = RESOURCE_DIR
 APP_FILE = PROJECT_DIR / "AI_Notion_筆記整理器.py"
-OUTPUT_DIR = PROJECT_DIR / "outputs"
+BACKGROUND_WORKER_FILE = PROJECT_DIR / "background_worker.py"
 SERVER_STATE_FILE = OUTPUT_DIR / ".streamlit_server.json"
 REQUIRED_MODULES = {
     "streamlit": "streamlit",
@@ -77,6 +81,9 @@ def _check_environment() -> list[str]:
     if not APP_FILE.exists():
         errors.append(f"找不到主程式：{APP_FILE.name}")
 
+    if not BACKGROUND_WORKER_FILE.exists():
+        errors.append(f"找不到背景 Worker：{BACKGROUND_WORKER_FILE.name}")
+
     missing_packages = [
         package_name
         for module_name, package_name in REQUIRED_MODULES.items()
@@ -101,6 +108,65 @@ def _check_environment() -> list[str]:
     return errors
 
 
+def _run_streamlit_server(port: int) -> int:
+    sys.argv = [
+        "streamlit",
+        "run",
+        str(APP_FILE),
+        "--server.address",
+        "127.0.0.1",
+        "--server.port",
+        str(port),
+        "--server.headless",
+        "true",
+        "--global.developmentMode",
+        "false",
+        "--browser.gatherUsageStats",
+        "false",
+    ]
+    from streamlit.web.cli import main as streamlit_main
+
+    result = streamlit_main()
+    return int(result or 0)
+
+
+def _worker_command() -> list[str]:
+    if is_frozen_application():
+        return [sys.executable, "--background-worker", "--poll-seconds", "1"]
+    return [sys.executable, str(BACKGROUND_WORKER_FILE), "--poll-seconds", "1"]
+
+
+def _streamlit_command(port: int) -> list[str]:
+    if is_frozen_application():
+        return [sys.executable, "--streamlit-server", "--port", str(port)]
+    return [
+        sys.executable,
+        "-m",
+        "streamlit",
+        "run",
+        str(APP_FILE),
+        "--server.address",
+        "127.0.0.1",
+        "--server.port",
+        str(port),
+        "--server.headless",
+        "true",
+        "--global.developmentMode",
+        "false",
+        "--browser.gatherUsageStats",
+        "false",
+    ]
+
+
+def _check_for_updates_in_background() -> None:
+    try:
+        from src.services.update_service import check_and_cache_update
+
+        check_and_cache_update()
+    except Exception as error:
+        print(f"自動更新檢查略過：{error}")
+
+
 def _wait_for_server(port: int, process: subprocess.Popen, timeout: float = 20) -> bool:
     deadline = time.monotonic() + timeout
 
@@ -121,7 +187,19 @@ def main() -> int:
         action="store_true",
         help="只檢查環境與資料庫，不啟動網頁",
     )
+    parser.add_argument("--background-worker", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--streamlit-server", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--port", type=int, default=8501, help=argparse.SUPPRESS)
+    parser.add_argument("--poll-seconds", type=float, default=1.0, help=argparse.SUPPRESS)
     args = parser.parse_args()
+
+    if args.background_worker:
+        from background_worker import run_worker
+
+        return run_worker(poll_seconds=args.poll_seconds)
+
+    if args.streamlit_server:
+        return _run_streamlit_server(args.port)
 
     os.chdir(PROJECT_DIR)
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -146,23 +224,10 @@ def main() -> int:
 
     port = _find_available_port()
     url = f"http://127.0.0.1:{port}"
-    command = [
-        sys.executable,
-        "-m",
-        "streamlit",
-        "run",
-        str(APP_FILE),
-        "--server.address",
-        "127.0.0.1",
-        "--server.port",
-        str(port),
-        "--server.headless",
-        "true",
-        "--browser.gatherUsageStats",
-        "false",
-    ]
+    command = _streamlit_command(port)
 
     print("正在啟動 AI Notion 筆記整理器...")
+    worker_process = subprocess.Popen(_worker_command(), cwd=PROJECT_DIR)
     process = subprocess.Popen(command, cwd=PROJECT_DIR)
 
     try:
@@ -179,12 +244,23 @@ def main() -> int:
             encoding="utf-8",
         )
         print(f"應用程式已開啟：{url}")
-        print("保持這個視窗開啟；關閉視窗即可停止應用程式。")
+        print("背景工作 Worker 已啟動。")
+        print("保持這個視窗開啟；關閉視窗即可停止應用程式與 Worker。")
         webbrowser.open(url)
+        threading.Thread(
+            target=_check_for_updates_in_background,
+            daemon=True,
+        ).start()
         return process.wait()
     except KeyboardInterrupt:
         return 0
     finally:
+        if worker_process.poll() is None:
+            worker_process.terminate()
+            try:
+                worker_process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                worker_process.kill()
         if process.poll() is None:
             process.terminate()
             try:

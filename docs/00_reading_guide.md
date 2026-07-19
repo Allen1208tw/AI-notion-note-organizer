@@ -17,6 +17,7 @@
 11. `11_sprint_planning.md`：理解如何拆解、驗證與交付功能。
 12. `12_code_walkthrough.md`：用程式入口逐段對照實際功能。
 13. `13_demo_and_technical_qa.md`：準備展示、口頭說明與常見技術問答。
+14. `14_background_jobs_and_windows_release.md`：理解背景佇列、EXE 封裝、安裝與自動更新。
 
 ## 三種使用方式
 

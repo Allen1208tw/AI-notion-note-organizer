@@ -34,6 +34,9 @@
 | Quiz/Flash Card 同步 | 首次、重跑、部分已存在、保留歷史 |
 | Streamlit 狀態 | 切文件、切章節、rerun、重開、Widget Key |
 | Notion | 新建、續跑、部分失敗、舊狀態格式、圖片缺失 |
+| 背景工作 | 建立、進度、取消、完成結果、Worker 中止恢復 |
+| Windows 發行 | 封裝健康檢查、Worker 心跳、Server health、安裝檔雜湊 |
+| 自動更新 | HTTPS、Host allowlist、版本比較、SHA-256 失敗刪檔 |
 
 ## Bug 修復模板
 

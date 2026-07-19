@@ -11,11 +11,22 @@
 -> .venv\Scripts\python.exe launcher.py
 -> 檢查依賴與 SQLite Schema
 -> 選擇 localhost Port
+-> 啟動 background_worker.py
 -> python -m streamlit run AI_Notion_筆記整理器.py
 -> 開啟瀏覽器
 ```
 
 如果雙擊無反應，先從終端執行 `.bat` 或 `launcher.py` 取得錯誤；常見原因是虛擬環境不存在、依賴缺少、入口檔名不符或 Port/狀態檔異常。
+
+安裝版由同一個封裝 EXE 以隱藏參數切換角色：一般模式是 Launcher，`--streamlit-server` 啟動內嵌 Streamlit CLI，`--background-worker` 執行 Worker。這避免安裝目錄需要三個不同 EXE，也讓 Launcher 能統一管理生命週期。
+
+## 背景工作
+
+首頁呼叫 `create_background_job()` 後，只把 Job ID 放入 Session State。工作 Payload 會序列化成 JSON；PDF bytes 等二進位內容另外寫入工作專屬 assets，避免塞進 SQLite。Worker 領取 pending 工作、更新進度、呼叫既有分析或 Notion Service，再保存結果。若 Worker 中止，下一次啟動會把 running 工作放回 pending。
+
+## 發行與更新
+
+`runtime_paths.py` 在開發模式使用專案目錄，在封裝模式將資料改放 `%LOCALAPPDATA%\AI Notion Note Organizer`。`AI_Notion.spec` 收集程式與套件，`AI_Notion_Setup.iss` 產生安裝程式，`build_windows_release.ps1` 串起完整流程。更新頁固定讀取此專案的 GitHub Release，只會執行 SHA-256 驗證成功的安裝檔。
 
 ## 文件上傳到分析
 

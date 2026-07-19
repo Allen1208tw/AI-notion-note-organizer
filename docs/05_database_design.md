@@ -21,6 +21,7 @@ erDiagram
     QUIZ ||--o{ QUIZ_ATTEMPT : records
     QUIZ ||--o| WEAK_POINT : summarizes
     FLASHCARD ||--o{ FLASHCARD_REVIEW : records
+    DOCUMENT ||--o{ BACKGROUND_JOB : requests
 ```
 
 ## 共通設計
@@ -38,6 +39,12 @@ erDiagram
 ## chapters
 
 代表主章節。核心欄位包括來源編號、顯示順序、描述性標題、原文索引、快取狀態和 Notion 子頁資訊。
+
+## background_jobs
+
+代表可持久化的耗時工作。`job_type` 區分文件分析與 Notion 匯出，`status` 依序為 pending、running 與終止狀態；進度、錯誤、取消要求和結果檔路徑都會保存。`document_id` 刻意不設外鍵，讓文件資料被管理操作清理後，背景工作歷史仍可顯示與診斷。
+
+Job 的大型輸入與輸出不直接塞入 SQLite。資料庫保存定位與狀態，JSON 和二進位內容保存在工作專屬資料夾；這避免 PDF bytes 膨脹資料庫，也讓工作檔可單獨清理。
 
 同一文件的 `chapter_order` 不可重複，`source_chapter_id` 也不可重複。章節偵測器因此必須先處理目錄重複、兩位數編號與重複序列。
 

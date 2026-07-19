@@ -9,12 +9,16 @@ flowchart TD
     C --> D["清理文字"]
     D --> E["偵測主章節"]
     D --> F["切分重疊 Chunks"]
-    F --> G["OpenAI 分塊分析"]
+    F --> Q["SQLite 背景工作佇列"]
+    Q --> W["Background Worker"]
+    W --> G["OpenAI 分塊分析"]
     G --> H["合併整份分析"]
     H --> I["Markdown / JSON"]
     E --> J["逐章詳細筆記"]
     J --> K["視覺/筆記快取"]
-    J --> L["Notion 子頁"]
+    J --> Q2["Notion 匯出 Job"]
+    Q2 --> W
+    W --> L["Notion 子頁"]
     J --> M["Quiz/Flashcard 寫入 SQLite"]
     M --> N["練習、弱點、儀表板"]
 ```

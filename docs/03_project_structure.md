@@ -6,12 +6,16 @@
 |---|---|
 | `AI_Notion_筆記整理器.py` | Streamlit 首頁、文件上傳、分析結果、Notion 整份匯出流程 |
 | `launcher.py` | 一鍵啟動、依賴與 Schema 檢查、Port 選擇、瀏覽器開啟 |
+| `background_worker.py` | 從 SQLite 佇列領取文件分析與 Notion 匯出工作 |
 | `啟動_AI筆記整理器.bat` | Windows 雙擊入口，呼叫虛擬環境中的 Python |
 | `pages/` | Streamlit 多頁功能 |
 | `src/` | 核心程式碼 |
 | `tests/` | 自動化測試 |
 | `outputs/` | SQLite、快取、匯出狀態與輸出檔；不應進 Git 或程式備份 |
 | `docs/` | 架構、開發與教學文件 |
+| `packaging/` | PyInstaller 與 Inno Setup 發行規格 |
+| `scripts/` | Windows Release 建置工具 |
+| `.github/workflows/windows-release.yml` | 版本 Tag 觸發測試、封裝與 GitHub Release 發布 |
 
 ## Pages
 
@@ -22,6 +26,8 @@
 | `pages/3_flash_card複習.py` | 依章節翻卡、熟悉度評分、卡片總覽與複習紀錄 |
 | `pages/4_學習儀錶板.py` | Quiz、Flash Card、弱點與近期活動整合統計 |
 | `pages/5_資料管理與診斷.py` | 資料健康檢查、章節分布、去重、清除與快取同步 |
+| `pages/6_背景工作.py` | 背景工作狀態、進度、取消與終止工作清理 |
+| `pages/7_關於與更新.py` | 版本、更新檢查、下載驗證與啟動安裝程式 |
 
 頁面只負責互動與顯示。任何可重用的資料查詢或更新都應放入 `src/services/`。
 

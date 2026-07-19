@@ -26,6 +26,12 @@ htmlcov/
 outputs/*
 !outputs/.gitkeep
 
+# Windows release artifacts
+
+build/
+dist/
+release/
+
 # OS files
 
 .DS_Store

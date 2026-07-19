@@ -14,7 +14,14 @@ from src.parsers.text_parser import parse_text_file
 from src.processors.chapter_detector import detect_chapters
 from src.processors.text_cleaner import clean_text
 from src.processors.text_chunker import chunk_text
+from src.models.analysis_models import AnalysisResult, ChunkAnalysisResult
 from src.services.analysis_service import analyze_chunk, analyze_document
+from src.services.background_job_service import (
+    create_background_job,
+    get_background_job,
+    load_background_job_result,
+    request_background_job_cancel,
+)
 from src.services.chapter_notion_service import (
     create_document_learning_notebook,
     sync_document_learning_cache_to_sqlite,
@@ -1810,6 +1817,97 @@ def run_document_notion_export(
         )
 
 
+def _render_active_background_job(
+    session_key: str,
+    result_type: str,
+    chapters: list[dict],
+) -> None:
+    """顯示目前背景工作，完成後把結果載回 Session State。"""
+
+    job_id = st.session_state.get(session_key)
+    if not job_id:
+        return
+
+    job = get_background_job(str(job_id))
+    if job is None:
+        st.session_state.pop(session_key, None)
+        st.warning("找不到先前的背景工作紀錄。")
+        return
+
+    status = str(job.get("status") or "")
+    title = str(job.get("display_name") or "背景工作")
+    percent = _safe_int(job.get("progress_percent"), 0)
+    message = str(job.get("progress_message") or "")
+
+    with st.container(border=True):
+        st.markdown(f"**背景工作｜{title}**")
+        st.progress(
+            min(max(percent, 0), 100),
+            text=message,
+        )
+
+        if status in {"pending", "running"}:
+            status_col, refresh_col, cancel_col = st.columns([3, 1, 1])
+            status_col.caption(
+                "等待 Worker" if status == "pending" else "背景執行中"
+            )
+            if refresh_col.button(
+                "更新狀態",
+                key=f"refresh_{session_key}_{job_id}",
+                width="stretch",
+            ):
+                st.rerun()
+            if cancel_col.button(
+                "取消",
+                key=f"cancel_{session_key}_{job_id}",
+                width="stretch",
+            ):
+                request_background_job_cancel(str(job_id))
+                st.rerun()
+            return
+
+        if status == "completed":
+            result = load_background_job_result(str(job_id))
+            if result_type == "analysis":
+                st.session_state["final_result"] = AnalysisResult.model_validate(
+                    result["final_result"]
+                )
+                st.session_state["all_chunk_results"] = [
+                    ChunkAnalysisResult.model_validate(item)
+                    for item in result.get("chunk_results", [])
+                ]
+                st.session_state.pop("notion_page_url", None)
+                st.success("完整文件背景分析完成，結果已載入。")
+            else:
+                export_summary = _calculate_export_summary(
+                    export_result=result,
+                    chapters=chapters,
+                )
+                normalized_result = _apply_export_summary_to_result(
+                    export_result=result,
+                    export_summary=export_summary,
+                )
+                st.session_state["document_notion_result"] = normalized_result
+                st.success("Notion 背景匯出完成，結果已載入。")
+            st.session_state.pop(session_key, None)
+            return
+
+        if status == "cancelled":
+            st.warning("背景工作已取消。")
+        else:
+            st.error(
+                "背景工作失敗："
+                + str(job.get("error_message") or "未知錯誤")
+            )
+
+        if st.button(
+            "關閉這則工作狀態",
+            key=f"dismiss_{session_key}_{job_id}",
+        ):
+            st.session_state.pop(session_key, None)
+            st.rerun()
+
+
 st.title("📝 AI Notion 筆記整理器")
 st.caption(
     "上傳文件，自動整理成適合貼到 Notion "
@@ -2509,6 +2607,17 @@ if "parsed_document" in st.session_state:
         parsed_document=parsed_document,
     )
 
+    _render_active_background_job(
+        session_key="active_analysis_job_id",
+        result_type="analysis",
+        chapters=chapters,
+    )
+    _render_active_background_job(
+        session_key="active_notion_job_id",
+        result_type="notion",
+        chapters=chapters,
+    )
+
     analysis_col, sync_col, resume_col, restart_col = (
         st.columns(4)
     )
@@ -2518,35 +2627,18 @@ if "parsed_document" in st.session_state:
             "分析整份文件",
             type="primary",
         ):
-            with st.spinner(
-                "AI 正在分析所有內容並整合筆記..."
-            ):
-                try:
-                    final_result, chunk_results = (
-                        analyze_document(chunks)
-                    )
-
-                    st.session_state[
-                        "final_result"
-                    ] = final_result
-
-                    st.session_state[
-                        "all_chunk_results"
-                    ] = chunk_results
-
-                    st.session_state.pop(
-                        "notion_page_url",
-                        None,
-                    )
-
-                    st.success(
-                        "完整文件分析完成。"
-                    )
-
-                except Exception as error:
-                    st.error(
-                        f"完整文件分析失敗：{error}"
-                    )
+            try:
+                job = create_background_job(
+                    job_type="document_analysis",
+                    display_name=f"分析整份文件｜{current_file_name}",
+                    payload={"chunks": chunks},
+                    document_id=current_document_id,
+                )
+                st.session_state["active_analysis_job_id"] = job["id"]
+                st.success("已加入背景工作佇列，可繼續使用其他頁面。")
+                st.rerun()
+            except Exception as error:
+                st.error(f"建立背景分析工作失敗：{error}")
 
     with sync_col:
         if st.button(
@@ -2651,24 +2743,48 @@ if "parsed_document" in st.session_state:
             "繼續未完成的 Notion 匯出",
             type="primary",
         ):
-            run_document_notion_export(
-                document_name=current_file_name,
-                chapters=chapters,
-                parsed_document=parsed_document,
-                resume=True,
-            )
+            try:
+                job = create_background_job(
+                    job_type="notion_export",
+                    display_name=f"續跑 Notion 匯出｜{current_file_name}",
+                    payload={
+                        "document_name": current_file_name,
+                        "chapters": chapters,
+                        "parsed_document": parsed_document,
+                        "document_id": current_document_id,
+                        "resume": True,
+                    },
+                    document_id=current_document_id,
+                )
+                st.session_state["active_notion_job_id"] = job["id"]
+                st.success("已加入 Notion 背景匯出佇列。")
+                st.rerun()
+            except Exception as error:
+                st.error(f"建立 Notion 背景工作失敗：{error}")
 
     with restart_col:
         if st.button(
             "開始整份 Notion 匯出",
             type="primary",
         ):
-            run_document_notion_export(
-                document_name=current_file_name,
-                chapters=chapters,
-                parsed_document=parsed_document,
-                resume=False,
-            )
+            try:
+                job = create_background_job(
+                    job_type="notion_export",
+                    display_name=f"全新 Notion 匯出｜{current_file_name}",
+                    payload={
+                        "document_name": current_file_name,
+                        "chapters": chapters,
+                        "parsed_document": parsed_document,
+                        "document_id": current_document_id,
+                        "resume": False,
+                    },
+                    document_id=current_document_id,
+                )
+                st.session_state["active_notion_job_id"] = job["id"]
+                st.success("已加入 Notion 背景匯出佇列。")
+                st.rerun()
+            except Exception as error:
+                st.error(f"建立 Notion 背景工作失敗：{error}")
 
     if (
         "document_notion_result"

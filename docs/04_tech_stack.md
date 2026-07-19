@@ -17,6 +17,10 @@
 | HTTP | requests | Notion 圖片上傳等 HTTP 操作 |
 | 圖表 | Streamlit 原生 Chart | 儀表板統計視覺化 |
 | 啟動 | Batch + Python launcher | Windows 一鍵開啟應用程式 |
+| 背景工作 | SQLite Queue + Worker Process | 持久化耗時工作、進度、取消與中斷恢復 |
+| 封裝 | PyInstaller | 將 Python 與相依套件封裝成可執行目錄 |
+| 安裝 | Inno Setup | 產生單一 Windows 安裝 EXE 與捷徑 |
+| 更新 | GitHub Releases API + SHA-256 | 零設定檢查、下載並驗證新版安裝程式 |
 
 ## 為什麼用 Streamlit
 

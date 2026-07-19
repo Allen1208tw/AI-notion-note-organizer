@@ -1,4 +1,5 @@
 import json
+from collections.abc import Callable
 
 from src.config.settings import OPENAI_CHUNK_MODEL, OPENAI_MERGE_MODEL
 from src.models.analysis_models import AnalysisResult, ChunkAnalysisResult
@@ -97,18 +98,32 @@ def analyze_chunk(
 
 def analyze_all_chunks(
     chunks: list[dict],
+    progress_callback: Callable[[int, int, str], None] | None = None,
+    cancellation_check: Callable[[], None] | None = None,
 ) -> list[ChunkAnalysisResult]:
     """逐段分析完整文件。"""
 
     chunk_results = []
 
-    for chunk in chunks:
+    total = len(chunks)
+
+    for index, chunk in enumerate(chunks, start=1):
+        if cancellation_check is not None:
+            cancellation_check()
+
         chunk_result = analyze_chunk(
             chunk_content=chunk["content"],
             chunk_id=chunk["chunk_id"],
         )
 
         chunk_results.append(chunk_result)
+
+        if progress_callback is not None:
+            progress_callback(
+                index,
+                total + 1,
+                f"完成第 {index} / {total} 個文字分段",
+            )
 
     return chunk_results
 
@@ -135,11 +150,27 @@ def merge_chunk_results(
 
 def analyze_document(
     chunks: list[dict],
+    progress_callback: Callable[[int, int, str], None] | None = None,
+    cancellation_check: Callable[[], None] | None = None,
 ) -> tuple[AnalysisResult, list[ChunkAnalysisResult]]:
     """完整分析文件：逐段分析後，再整合成最終筆記。"""
 
-    chunk_results = analyze_all_chunks(chunks)
+    total = len(chunks)
+    chunk_results = analyze_all_chunks(
+        chunks,
+        progress_callback=progress_callback,
+        cancellation_check=cancellation_check,
+    )
+
+    if cancellation_check is not None:
+        cancellation_check()
+
+    if progress_callback is not None:
+        progress_callback(total, total + 1, "正在整合整份文件分析")
 
     final_result = merge_chunk_results(chunk_results)
+
+    if progress_callback is not None:
+        progress_callback(total + 1, total + 1, "整份文件分析完成")
 
     return final_result, chunk_results

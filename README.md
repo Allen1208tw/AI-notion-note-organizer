@@ -15,7 +15,8 @@
 - Flash Card 翻卡、熟悉度與複習排程。
 - 學習儀表板與 SQLite 資料診斷。
 - 非破壞性重新分析、題目去重與舊快取回填。
-- Windows 雙擊啟動。
+- SQLite 持久化背景工作佇列，可離開目前頁面並查看進度。
+- Windows 單一安裝 EXE、桌面捷徑與版本更新檢查。
 
 ## 一鍵啟動
 
@@ -26,6 +27,8 @@
 ```
 
 Launcher 會檢查虛擬環境、必要套件和 SQLite Schema，尋找可用 Port，啟動 Streamlit 並開啟瀏覽器。
+
+Launcher 也會啟動獨立背景 Worker。文件分析與整份 Notion 匯出會先寫入 SQLite 佇列，由 Worker 執行；切換頁面不會中斷工作，Worker 意外關閉後也會在下次啟動時恢復未完成工作。
 
 也可以手動執行：
 
@@ -66,8 +69,60 @@ pages/2_quiz練習.py            Quiz 練習
 pages/3_flash_card複習.py      Flash Card 複習
 pages/4_學習儀錶板.py          學習統計
 pages/5_資料管理與診斷.py      維護與修復
+pages/6_背景工作.py            背景佇列、進度、取消與歷史
+pages/7_關於與更新.py          版本資訊、更新檢查與安裝
 launcher.py                    Windows 啟動器
+background_worker.py           背景工作執行程序
 ```
+
+## Windows 安裝版
+
+開發者建置工具：
+
+```powershell
+.venv\Scripts\python.exe -m pip install -r requirements-build.txt
+winget install --id JRSoftware.InnoSetup --exact
+```
+
+建立安裝程式：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\build_windows_release.ps1
+```
+
+完成檔案位於：
+
+```text
+release/AI_Notion_Note_Organizer_Setup.exe
+```
+
+這是一個單一安裝 EXE。它會安裝應用程式、建立開始功能表與可選桌面捷徑；執行時不需要 Python、VS Code 或專案虛擬環境。
+
+安裝版的個人資料位於：
+
+```text
+%LOCALAPPDATA%\AI Notion Note Organizer\
+```
+
+首次使用時，依同目錄的 `.env.example` 建立 `.env` 並填入 API Key。安裝與更新不會把 `.env`、SQLite、快取或背景工作打包進程式，也不會在升級時刪除它們。
+
+## 自動更新
+
+應用程式啟動後會在背景讀取本專案固定的 GitHub latest Release，不需要設定 `APP_UPDATE_MANIFEST_URL`，也不需要另外上傳 Manifest。安裝檔必須使用固定名稱，下載後必須符合 GitHub Release Asset 提供的 SHA-256 digest，最後仍由使用者在「關於與更新」頁確認安裝。
+
+建立本機 Release：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\build_windows_release.ps1
+```
+
+推送 `v3.0.1` 這類版本 Tag 後，GitHub Actions 會自動測試、建置並建立 Release。使用者固定使用以下一鍵下載網址：
+
+```text
+https://github.com/Allen1208tw/AI-notion-note-organizer/releases/latest/download/AI_Notion_Note_Organizer_Setup.exe
+```
+
+完整發布步驟見 [背景工作、Windows 封裝與自動更新](docs/14_background_jobs_and_windows_release.md)。
 
 ## 技術文件
 
@@ -87,7 +142,7 @@ launcher.py                    Windows 啟動器
 .venv\Scripts\python.exe -m py_compile launcher.py AI_Notion_筆記整理器.py
 ```
 
-目前穩定性測試重點包括：重複題目清理、作答/複習關聯保留、重新分析沿用章節 ID，以及非破壞性同步。
+目前穩定性測試重點包括：重複題目清理、作答/複習關聯保留、重新分析沿用章節 ID、背景 Job 序列化與恢復，以及 GitHub Release 來源與 SHA-256 驗證。
 
 ## 備份
 
@@ -104,4 +159,4 @@ backups/
 
 ## 現況與限制
 
-目前完成到 V2.5，定位是 Windows 單機應用。SQLite、檔案快取和 Streamlit 很適合個人使用，但尚未提供多人帳號、雲端資料隔離、背景工作佇列和正式資料庫 Migration。雲端化路線請參考 `docs/10_development_roadmap.md`。
+目前完成 Windows 單機發行版、SQLite 背景工作佇列與安全更新流程。SQLite、檔案快取和 Streamlit 適合個人使用；尚未提供多人帳號、雲端資料隔離與 Alembic Migration。雲端化路線請參考 `docs/10_development_roadmap.md`。

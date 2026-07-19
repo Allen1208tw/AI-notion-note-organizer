@@ -36,7 +36,11 @@
 
 目前階段。補齊架構、Schema、資料流、Prompt、API、UI、Code Walkthrough、展示與問答，讓專案可以交接、展示和繼續擴充。
 
-## V3：Windows 發行版
+## V3：Windows 發行版與背景工作
+
+已完成 SQLite 持久化背景工作佇列、獨立 Worker、進度與取消、中斷恢復、PyInstaller 封裝、Inno Setup 單一安裝 EXE、AppData 資料隔離，以及 GitHub Releases + SHA-256 零設定更新流程。
+
+後續發行改善可加入程式碼簽章、正式下載主機、CI 自動建置與 Delta Update。目前採完整安裝程式覆蓋應用程式檔案，個人資料因位於 AppData 而不受影響。
 
 建議項目：AppData 持久資料目錄、正式 Migration、日誌、版本號、圖示、PyInstaller/安裝程式、更新與解除安裝。先確保 SQLite 和快取不寫進 EXE 臨時目錄。
 

@@ -15,6 +15,9 @@ flowchart TD
     S --> DB["SQLite / SQLAlchemy"]
     S --> C["JSON 快取與匯出狀態"]
     S --> E["Markdown / JSON 匯出"]
+    UI --> Q["SQLite 背景工作佇列"]
+    W["Background Worker"] --> Q
+    W --> S
 ```
 
 ## 六個主要層次
@@ -38,6 +41,10 @@ flowchart TD
 ### 5. 持久化層
 
 SQLAlchemy Model 位於 `src/database/models.py`。`learning_database_service.py` 管理文件、章節、Quiz 與 Flash Card；練習、儀表板與維護功能各有獨立 Service。快取與 Notion 續跑狀態則以 JSON 檔保存在 `outputs/`。
+
+### 6. 背景執行與桌面發行層
+
+`background_job_service.py` 將耗時工作及進度寫入 SQLite，`background_worker.py` 在獨立程序中取出工作並呼叫既有 Service。`launcher.py` 同時管理 Streamlit、Worker、Port、瀏覽器與更新檢查。PyInstaller 封裝 Python 執行環境，Inno Setup 再產生單一 Windows 安裝 EXE。
 
 ### 6. 啟動與執行環境層
 

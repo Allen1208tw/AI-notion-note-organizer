@@ -1,11 +1,12 @@
-from pathlib import Path
 import os
 
 from dotenv import load_dotenv
 
-BASE_DIR = Path(__file__).resolve().parents[2]
+from src.config.runtime_paths import ENV_FILE, OUTPUT_DIR, RESOURCE_DIR
 
-load_dotenv(BASE_DIR / ".env")
+BASE_DIR = RESOURCE_DIR
+
+load_dotenv(ENV_FILE)
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 OPENAI_CHUNK_MODEL = os.getenv("OPENAI_CHUNK_MODEL", "gpt-5-mini")
@@ -19,4 +20,8 @@ CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "6000"))
 CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", "500"))
 
 SUPPORTED_FILE_TYPES = [".pdf", ".docx", ".txt", ".md"]
-OUTPUT_DIR = BASE_DIR / "outputs"
+
+APP_AUTO_DOWNLOAD_UPDATES = (
+    os.getenv("APP_AUTO_DOWNLOAD_UPDATES", "false").strip().lower()
+    in {"1", "true", "yes", "on"}
+)
