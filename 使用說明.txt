@@ -1,88 +1,164 @@
 AI Notion 筆記整理器｜快速使用說明
 ====================================
 
-一、首次設定
+一、第一次使用
 ------------
 
 1. 啟動 AI Notion 筆記整理器。
 2. 在左側開啟「開始使用與設定」。
-3. 輸入 OpenAI API Key。
-4. 若要匯出到 Notion，再輸入 Notion Integration Token 與父頁網址。
-5. 按「儲存設定」，再按「套用設定並重新啟動」。
+3. 選擇 AI 供應商：OpenAI 或 Gemini。
+4. 輸入對應的 API Key。
+5. 若要匯出到 Notion，再輸入 Notion Integration Token 與父頁網址。
+6. 按「儲存設定」。
+7. 按「套用設定並重新啟動」。
 
-API Key 只會保存在這台電腦的 .env，不會上傳到 GitHub，也不會包進安裝檔。
+API Key 只會保存在這台電腦的個人資料資料夾，不會上傳到 GitHub，也不會包進安裝檔。
 
-二、必要設定
-------------
+
+二、API Key 從哪裡取得
+--------------------
+
+OpenAI API Key
+
+1. 開啟：
+   https://platform.openai.com/api-keys
+2. 登入 OpenAI Platform。
+3. 建立新的 API Key。
+4. 複製後貼到「開始使用與設定」的 OpenAI API Key 欄位。
+
+Gemini API Key
+
+1. 開啟：
+   https://aistudio.google.com/app/apikey
+2. 登入 Google AI Studio。
+3. 建立 API Key。
+4. 複製後貼到「開始使用與設定」的 Gemini API Key 欄位。
+5. 若想使用 Gemini 生成完整筆記，請把 AI 供應商選成 Gemini。
+
+
+三、Notion 如何連線
+----------------
+
+Notion 需要兩個東西：
+
+1. Notion Integration Token
+2. Notion 父頁網址或 Page ID
+
+步驟如下：
+
+1. 開啟：
+   https://www.notion.so/profile/integrations
+2. 建立一個新的 Integration，例如 AI Notion Organizer。
+3. 複製 Internal Integration Token。
+4. 貼到「開始使用與設定」的 Notion Integration Token 欄位。
+5. 在 Notion 建立一個空白頁，例如 AI 學習筆記。
+6. 打開該頁右上角 ...。
+7. 選擇 Connections。
+8. 點 + Add connection 或 Add connections。
+9. 搜尋並選擇剛剛建立的 Integration。
+10. 確認 Integration 可以存取這個頁面與子頁。
+11. 複製這個 Notion 頁面的完整網址。
+12. 貼到「Notion 父頁網址或 Page ID」欄位。
+
+如果頁面右上角 ... 裡找不到 Connections：
+
+1. 回到 Notion Integrations 頁面。
+2. 點進你的 Integration。
+3. 打開 Content access。
+4. 點 Edit access。
+5. 選取要作為父頁的 Notion 頁面並儲存。
+
+注意：
+
+- Notion Token 連線成功，不代表父頁已授權成功。
+- 若匯出時出現 Could not find page，通常是父頁沒有分享給 Integration。
+- Integration 和父頁必須在同一個 Notion Workspace。
+- 請貼真正的 Notion 頁面網址，不要貼 profile、integrations 或 AI Notion Organizer 自己的本機網址。
+
+
+四、常用設定
+----------
+
+AI_PROVIDER
+
+- openai：使用 OpenAI 生成。
+- gemini：使用 Gemini 生成。
 
 OPENAI_API_KEY
-文件摘要、章節筆記、Quiz、Flash Card 與圖片分析都需要 OpenAI API Key。
+
+- OpenAI 模式需要。
+
+GEMINI_API_KEY
+
+- Gemini 模式需要。
 
 NOTION_API_KEY
-只有匯出 Notion 時需要。請在 Notion 建立 Integration，取得 Internal Integration Token。
+
+- 只有匯出 Notion 時需要。
 
 NOTION_PARENT_PAGE_ID
-建立一個 Notion 空白父頁，把該頁分享給 Integration，然後在設定頁貼上完整頁面網址即可。
 
-三、進階參數
-------------
+- Notion 父頁網址會自動轉成 Page ID。
+- 父頁必須分享給 Notion Integration。
 
-分段分析模型
-處理每一個 Chunk 的模型。預設：gpt-5-mini。
 
-整體合併與詳細筆記模型
-合併整份結果及建立章節詳細筆記。預設：gpt-5。
+五、一般使用流程
+--------------
 
-最大上傳檔案大小
-限制可上傳文件大小。預設：25 MB。
+1. 上傳文件。
+2. 執行文件分析。
+3. 確認主章節與子章節。
+4. 選擇要生成的主章節或子章節。
+5. 開始整份 Notion 匯出。
+6. 到 Notion 查看父頁與章節子頁。
+7. 回到程式使用 Quiz、Flash Card、學習儀表板。
 
-Chunk 大小
-每段送給 AI 的文字長度。預設：6000 字元。
 
-Chunk 重疊字數
-相鄰段落保留的共同文字，避免語意在切割處中斷。預設：500，必須小於 Chunk 大小。
+六、資料保存位置
+--------------
 
-四、基本使用流程
-----------------
-
-上傳文件
-→ 偵測主章節
-→ 執行背景分析
-→ 建立詳細學習筆記
-→ 匯出 Notion
-→ 同步 Quiz 與 Flash Card
-→ 練習並查看儀表板
-
-五、個人資料位置
-----------------
+使用者資料保存在：
 
 %LOCALAPPDATA%\AI Notion Note Organizer\
 
-此資料夾包含 .env、SQLite、快取、背景工作與更新檔。重新安裝或更新不會刪除這些資料。
+包含：
 
-請勿公開：
+- .env：API Key 與設定。
+- outputs\learning_system.db：SQLite 學習資料庫。
+- outputs\chapter_cache：章節筆記與圖片快取。
+- outputs\background_jobs：背景工作紀錄。
 
-.env
-outputs\learning_system.db
-包含私人內容的快取或匯出檔
+更新或重新安裝新版時，這些使用者資料會保留。
 
-六、更新
---------
-
-在「關於與更新」頁按「立即檢查更新」。下載後會比對 GitHub Release 的 SHA-256，再由使用者確認安裝。
 
 七、常見問題
-------------
+----------
 
-無法分析文件
-請確認 OpenAI Key 已設定、帳戶可使用 API，並重新啟動應用程式。
+OpenAI 或 Gemini 測試失敗
 
-無法匯出 Notion
-請確認 Token、父頁網址，以及父頁是否已分享給 Integration。
+- 確認 API Key 已貼到正確欄位。
+- 確認選擇的 AI 供應商正確。
+- 儲存設定後請重新啟動 App。
 
-設定後沒有生效
-回到「開始使用與設定」，按「套用設定並重新啟動」。
+Notion Token 測試成功，但匯出失敗
 
-背景工作沒有進行
-請保持啟動器視窗開啟，並到「背景工作」頁查看錯誤。
+- 通常是 Notion 父頁沒有分享給 Integration。
+- 請回 Notion 父頁右上角 ...，從 Connections 將 Integration 加入。
+- 若頁面選單找不到 Connections，請到 Integration 後台的 Content access 加入父頁。
 
+出現 Could not find page
+
+- 父頁沒有分享給 Integration。
+- 或貼到不同 Workspace 的頁面。
+- 或貼錯頁面網址。
+
+更新後 API Key 不見
+
+- 正常情況下 Key 會保存在 AppData。
+- 若換電腦使用，需要在新電腦重新設定 Key。
+
+背景工作還在跑嗎？
+
+- 文件分析與 Notion 匯出會寫入背景工作佇列。
+- 關閉瀏覽器不會刪除工作。
+- 重新開啟程式後，可到「背景工作」查看狀態。

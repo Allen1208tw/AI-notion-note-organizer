@@ -20,6 +20,14 @@
 
 ## 最新修正
 
+### v3.2.6
+
+- 「開始使用與設定」頁新增 OpenAI、Gemini、Notion 的一鍵跳轉按鈕。
+- Gemini API Key 可直接從設定頁開啟 Google AI Studio API Key 頁面取得。
+- Notion 設定區加入完整操作教學，說明 Integration Token、父頁網址與新版 `... → Connections → Add connection` 權限設定。
+- 連線測試區補充提醒：Notion Token 成功不代表父頁已授權，若出現 `Could not find page`，通常要回 Notion 父頁右上角 `...` 把 Integration 加入 Connections。
+- 安裝版 `使用說明.txt` 改為完整中文教學，包含 API Key 取得方式、Notion 連線步驟、常見錯誤與資料保存位置。
+
 ### v3.2.5
 
 - 修正 MySQL 教材中 SQL 日期範圍、官方文件編號與 `NULL Values` 被誤判成子章節的問題。
