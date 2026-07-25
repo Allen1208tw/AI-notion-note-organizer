@@ -1215,8 +1215,9 @@ def _build_parent_page_blocks(
             (
                 "📘 文件詳細學習筆記\n"
                 f"原始文件：{document_name}\n"
-                f"偵測主章節數：{chapter_count}\n"
-                "每個主章節已建立為本頁下方的子頁面。"
+                f"本次筆記目標數：{chapter_count}\n"
+                "勾選的主章節或子章節，"
+                "都會建立在本頁下方作為子頁面。"
             ),
             icon="📘",
             color="blue_background",
@@ -1226,8 +1227,9 @@ def _build_parent_page_blocks(
 
     blocks.extend(
         _paragraph(
-            "請從本頁下方開啟各個主章節子頁面，"
-            "閱讀完整學習筆記。"
+            "請從本頁下方開啟各個筆記子頁。"
+            "主章節子頁會濃縮整章內容，"
+            "子章節子頁會針對單一學習單元深入整理。"
         )
     )
 
@@ -2767,10 +2769,16 @@ def create_document_learning_notebook(
                     f"拒絕建立 Notion 子頁，詳細筆記無效：{reason}"
                 )
 
-            child_page_title = (
-                f"Module {chapter_id}｜"
-                f"{chapter_title}"
-            )
+            if chapter.get("note_scope") == "subsection":
+                child_page_title = (
+                    f"子章節 {chapter_id}｜"
+                    f"{chapter_title}"
+                )
+            else:
+                child_page_title = (
+                    f"第 {chapter_id} 章｜"
+                    f"{chapter_title}"
+                )
 
             child_page = _create_page(
                 notion=notion,

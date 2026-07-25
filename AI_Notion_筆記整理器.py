@@ -1071,6 +1071,171 @@ def _get_source_chapter_id(chapter, index: int) -> str:
     return str(value).strip()
 
 
+def _make_subsection_note_target(
+    chapter: dict,
+    chapter_index: int,
+    subsection: dict,
+    subsection_index: int,
+) -> dict:
+    """將子章節轉成可獨立生成詳細筆記的章節資料。"""
+
+    chapter_id = str(
+        chapter.get("chapter_id")
+        or chapter.get("source_chapter_id")
+        or chapter_index
+    ).strip()
+
+    raw_section_id = str(
+        subsection.get("section_id")
+        or f"{chapter_id}-{subsection_index}"
+    ).strip()
+
+    if raw_section_id.startswith(f"{chapter_id}-"):
+        section_suffix = raw_section_id[len(chapter_id) + 1 :]
+    else:
+        section_suffix = str(subsection_index)
+
+    note_id = f"{chapter_id}-{section_suffix}"
+    chapter_start = int(chapter.get("start_index") or 0)
+    subsection_start = int(subsection.get("start_index") or 0)
+    subsection_end = int(subsection.get("end_index") or subsection_start)
+
+    return {
+        "chapter_id": note_id,
+        "source_chapter_id": note_id,
+        "chapter_order": f"{chapter_index}.{subsection_index}",
+        "title": (
+            f"{chapter.get('title', f'第 {chapter_id} 章')}"
+            f"｜{subsection.get('title', f'子章節 {subsection_index}')}"
+        ),
+        "source": "selected_subsection",
+        "content": str(subsection.get("content") or "").strip(),
+        "start_index": chapter_start + subsection_start,
+        "end_index": chapter_start + subsection_end,
+        "subsections": [],
+        "parent_chapter_id": chapter_id,
+        "parent_chapter_title": chapter.get("title", ""),
+        "section_id": raw_section_id,
+        "section_title": subsection.get("title", ""),
+        "note_scope": "subsection",
+    }
+
+
+def _make_main_chapter_note_target(
+    chapter: dict,
+    chapter_index: int,
+) -> dict:
+    """將主章節標記成生成目標。"""
+
+    item = dict(chapter)
+    item["chapter_id"] = str(
+        item.get("chapter_id")
+        or item.get("source_chapter_id")
+        or chapter_index
+    ).strip()
+    item["source_chapter_id"] = item["chapter_id"]
+    item["note_scope"] = "chapter"
+    return item
+
+
+def _build_note_generation_options(
+    chapters: list[dict],
+) -> tuple[list[dict], dict[str, dict]]:
+    """建立主章節/子章節可勾選的生成選項。"""
+
+    options: list[dict] = []
+    targets_by_key: dict[str, dict] = {}
+
+    for chapter_index, chapter in enumerate(chapters, start=1):
+        chapter_target = _make_main_chapter_note_target(
+            chapter=chapter,
+            chapter_index=chapter_index,
+        )
+        chapter_id = chapter_target["chapter_id"]
+        chapter_key = f"chapter::{chapter_id}"
+        chapter_label = (
+            f"主章節｜第 {chapter_id} 章｜"
+            f"{chapter.get('title', '未命名章節')}"
+        )
+
+        options.append(
+            {
+                "key": chapter_key,
+                "label": chapter_label,
+                "scope": "chapter",
+                "target": chapter_target,
+            }
+        )
+        targets_by_key[chapter_key] = chapter_target
+
+        for subsection_index, subsection in enumerate(
+            chapter.get("subsections", []) or [],
+            start=1,
+        ):
+            subsection_target = _make_subsection_note_target(
+                chapter=chapter,
+                chapter_index=chapter_index,
+                subsection=subsection,
+                subsection_index=subsection_index,
+            )
+
+            if not subsection_target.get("content"):
+                continue
+
+            subsection_key = (
+                f"subsection::{subsection_target['chapter_id']}"
+            )
+            subsection_label = (
+                f"子章節｜第 {subsection_target['chapter_id']} 節｜"
+                f"{subsection.get('title', '未命名子章節')}"
+            )
+
+            options.append(
+                {
+                    "key": subsection_key,
+                    "label": subsection_label,
+                    "scope": "subsection",
+                    "target": subsection_target,
+                }
+            )
+            targets_by_key[subsection_key] = subsection_target
+
+    return options, targets_by_key
+
+
+def _resolve_selected_note_targets(
+    chapters: list[dict],
+    selected_keys: list[str],
+    targets_by_key: dict[str, dict],
+) -> list[dict]:
+    """依照勾選結果取得要生成的筆記目標。"""
+
+    if not selected_keys:
+        return [
+            _make_main_chapter_note_target(chapter, index)
+            for index, chapter in enumerate(chapters, start=1)
+        ]
+
+    selected_targets = []
+    seen_ids: set[str] = set()
+
+    for key in selected_keys:
+        target = targets_by_key.get(key)
+
+        if not target:
+            continue
+
+        target_id = str(target.get("chapter_id") or "").strip()
+
+        if not target_id or target_id in seen_ids:
+            continue
+
+        selected_targets.append(target)
+        seen_ids.add(target_id)
+
+    return selected_targets
+
+
 def _failed_item_has_real_error(item) -> bool:
     """判斷失敗項目是否有實際錯誤訊息。"""
 
@@ -1638,7 +1803,7 @@ def run_document_notion_export(
 
         progress_status.caption(
             f"進度：{safe_current} / "
-            f"{safe_total} 個主章節"
+            f"{safe_total} 份筆記目標"
         )
 
     try:
@@ -1649,6 +1814,7 @@ def run_document_notion_export(
             progress_callback=update_progress,
             max_visual_pages=3,
             resume=resume,
+            document_id=current_document_id,
         )
 
         if not isinstance(export_result, dict):
@@ -2556,6 +2722,151 @@ if "parsed_document" in st.session_state:
                                     f"{section_id}"
                                 ),
                             )
+
+                            subsection_target = _make_subsection_note_target(
+                                chapter=chapter,
+                                chapter_index=chapter_index,
+                                subsection=subsection,
+                                subsection_index=subsection_index,
+                            )
+                            subsection_note_id = subsection_target[
+                                "chapter_id"
+                            ]
+
+                            if st.button(
+                                "生成此子章節詳細筆記",
+                                key=(
+                                    "generate_subsection_note_"
+                                    f"{chapter_id}_{section_id}"
+                                ),
+                            ):
+                                with st.spinner(
+                                    "AI 正在生成子章節詳細筆記..."
+                                ):
+                                    try:
+                                        visual_context = []
+
+                                        is_pdf = (
+                                            metadata.get(
+                                                "file_extension"
+                                            )
+                                            == ".pdf"
+                                        )
+
+                                        has_pdf_data = bool(
+                                            parsed_document.get(
+                                                "pdf_bytes"
+                                            )
+                                            and parsed_document.get(
+                                                "page_texts"
+                                            )
+                                        )
+
+                                        if is_pdf and has_pdf_data:
+                                            visual_context = (
+                                                analyze_chapter_visuals(
+                                                    chapter=(
+                                                        subsection_target
+                                                    ),
+                                                    pdf_bytes=(
+                                                        parsed_document[
+                                                            "pdf_bytes"
+                                                        ]
+                                                    ),
+                                                    page_texts=(
+                                                        parsed_document[
+                                                            "page_texts"
+                                                        ]
+                                                    ),
+                                                    max_pages=2,
+                                                )
+                                            )
+
+                                            st.session_state[
+                                                "chapter_visual_contexts"
+                                            ][subsection_note_id] = (
+                                                visual_context
+                                            )
+
+                                        chapter_note = analyze_chapter(
+                                            chapter=subsection_target,
+                                            visual_context=visual_context,
+                                        )
+
+                                        current_document_id = (
+                                            st.session_state.get(
+                                                "current_document_id"
+                                            )
+                                        )
+
+                                        if current_document_id:
+                                            save_result = (
+                                                save_chapter_learning_items(
+                                                    document_id=(
+                                                        current_document_id
+                                                    ),
+                                                    source_chapter_id=(
+                                                        subsection_note_id
+                                                    ),
+                                                    chapter_note=chapter_note,
+                                                )
+                                            )
+
+                                            if save_result.get("saved"):
+                                                st.success(
+                                                    "已儲存到 SQLite："
+                                                    f"{save_result.get('quiz_count', 0)} "
+                                                    "題 Quiz、"
+                                                    f"{save_result.get('flashcard_count', 0)} "
+                                                    "張 Flash Cards。"
+                                                )
+                                            else:
+                                                st.warning(
+                                                    "Quiz / Flash Cards "
+                                                    "未能儲存到 SQLite："
+                                                    f"{save_result.get('reason', '')}"
+                                                )
+
+                                        st.session_state[
+                                            "chapter_notes"
+                                        ][subsection_note_id] = chapter_note
+
+                                        st.session_state[
+                                            "selected_chapter_note_id"
+                                        ] = subsection_note_id
+
+                                        st.session_state[
+                                            "scroll_to_chapter_note"
+                                        ] = True
+
+                                        st.success(
+                                            "子章節詳細學習筆記生成完成。"
+                                        )
+
+                                    except Exception as error:
+                                        st.error(
+                                            "子章節學習筆記生成失敗："
+                                            f"{error}"
+                                        )
+
+                            if (
+                                subsection_note_id
+                                in st.session_state["chapter_notes"]
+                            ):
+                                if st.button(
+                                    "查看此子章節詳細學習筆記",
+                                    key=(
+                                        "view_subsection_note_"
+                                        f"{chapter_id}_{section_id}"
+                                    ),
+                                ):
+                                    st.session_state[
+                                        "selected_chapter_note_id"
+                                    ] = subsection_note_id
+
+                                    st.session_state[
+                                        "scroll_to_chapter_note"
+                                    ] = True
                 else:
                     st.info(
                         "此主章節未偵測到明確子章節。"
@@ -2677,9 +2988,91 @@ if "parsed_document" in st.session_state:
             f"{document_learning_counts.get('flashcard_count', 0)} 張",
         )
 
+    note_generation_options, note_targets_by_key = (
+        _build_note_generation_options(chapters)
+    )
+
+    generation_mode = st.radio(
+        "詳細筆記生成範圍",
+        [
+            "全部主章節",
+            "自選主章節或子章節",
+        ],
+        horizontal=True,
+        key="note_generation_mode",
+        help=(
+            "選主章節時，會把該主章節底下所有子章節濃縮成一份完整筆記；"
+            "選子章節時，會只針對該子章節獨立生成詳細筆記。"
+        ),
+    )
+
+    selected_note_keys: list[str] = []
+
+    if generation_mode == "自選主章節或子章節":
+        option_labels = [
+            option["label"]
+            for option in note_generation_options
+        ]
+        label_to_key = {
+            option["label"]: option["key"]
+            for option in note_generation_options
+        }
+
+        selected_labels = st.multiselect(
+            "勾選要生成詳細筆記的範圍",
+            options=option_labels,
+            default=[],
+            key="selected_note_generation_labels",
+            help=(
+                "可以混合選主章節與子章節。主章節會整理整章，"
+                "子章節會獨立建立一份更精細的筆記。"
+            ),
+        )
+
+        selected_note_keys = [
+            label_to_key[label]
+            for label in selected_labels
+            if label in label_to_key
+        ]
+
+        if not selected_note_keys:
+            st.info(
+                "尚未勾選生成範圍；若直接匯出，系統會改用全部主章節。"
+            )
+
+    selected_generation_chapters = (
+        _resolve_selected_note_targets(
+            chapters=chapters,
+            selected_keys=selected_note_keys,
+            targets_by_key=note_targets_by_key,
+        )
+    )
+
+    selected_chapter_count = len(
+        [
+            item
+            for item in selected_generation_chapters
+            if item.get("note_scope") == "chapter"
+        ]
+    )
+    selected_subsection_count = len(
+        [
+            item
+            for item in selected_generation_chapters
+            if item.get("note_scope") == "subsection"
+        ]
+    )
+
+    st.caption(
+        "本次 Notion 詳細筆記目標："
+        f"{len(selected_generation_chapters)} 份；"
+        f"主章節 {selected_chapter_count} 份，"
+        f"子章節 {selected_subsection_count} 份。"
+    )
+
     show_export_estimates(
         document_name=current_file_name,
-        chapters=chapters,
+        chapters=selected_generation_chapters,
         parsed_document=parsed_document,
     )
 
@@ -2695,7 +3088,7 @@ if "parsed_document" in st.session_state:
     _render_active_background_job(
         session_key="active_notion_job_id",
         result_type="notion",
-        chapters=chapters,
+        chapters=selected_generation_chapters,
     )
 
     analysis_col, sync_col, resume_col, restart_col = (
@@ -2829,7 +3222,7 @@ if "parsed_document" in st.session_state:
                     display_name=f"續跑 Notion 匯出｜{current_file_name}",
                     payload={
                         "document_name": current_file_name,
-                        "chapters": chapters,
+                        "chapters": selected_generation_chapters,
                         "parsed_document": parsed_document,
                         "document_id": current_document_id,
                         "resume": True,
@@ -2853,7 +3246,7 @@ if "parsed_document" in st.session_state:
                     display_name=f"全新 Notion 匯出｜{current_file_name}",
                     payload={
                         "document_name": current_file_name,
-                        "chapters": chapters,
+                        "chapters": selected_generation_chapters,
                         "parsed_document": parsed_document,
                         "document_id": current_document_id,
                         "resume": False,

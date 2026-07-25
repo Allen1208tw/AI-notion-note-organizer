@@ -34,6 +34,12 @@
 
 同時，`detect_chapters()` 從完整文字找主章節。它的結果不只是 UI 標題，也會成為 SQLite `source_chapter_id`、快取定位和 Notion 子頁名稱，所以這個模組的錯誤會沿整條資料流放大。
 
+子章節由同一個偵測器產生。程式會先讀主章節開頭目錄，再用投影片標題定位內容範圍，所以「微分」這種章節會保留為 6 個教學單元，而不是被每張投影片小標題切成 20 多段。
+
+偵測器採保守策略：只有明確目錄、`Section`、`1.1` 這類可靠標題才會建立子章節；若內容像 Python/PyMySQL 投影片一樣只有頁碼、程式碼、圖片說明或零散短句，系統會讓該章保持 0 個子章節，直接用主章節生成筆記。
+
+`1.1` 這類編號型小節還會比對父章節編號。第 4 章中的 `9.1.7 NULL Values`、`1970-01-01 00:00:01 UTC` 等 SQL 文件內容或日期值會被排除，不會變成使用者可勾選的子章節。
+
 ## 文件寫入 SQLite
 
 主頁呼叫 `create_or_update_document()`。函式先用檔案 Hash 找既有 Document，再建立新舊章節 map。配對成功的章節沿用 ID並更新標題/索引；新增章節建立 UUID；消失章節才清理。
@@ -58,6 +64,10 @@ load visual cache
 ```
 
 任何步驟失敗都應留下足夠狀態，使下一次能從該章繼續。
+
+首頁的 `_build_note_generation_options()` 會把主章節和子章節轉成可勾選項目。`_make_main_chapter_note_target()` 代表整章濃縮，`_make_subsection_note_target()` 則把單一子章節包裝成可獨立生成的章節資料。這些目標最後都送進 `create_document_learning_notebook()`，因此會共用同一個 Notion 父頁，只是子頁標題會區分「第 X 章」或「子章節 X-Y」。
+
+子章節沒有原本的 SQLite Chapter 時，`learning_database_service._create_subsection_chapter_record()` 會建立 `source="selected_subsection"` 的章節紀錄，讓該子章節的 Quiz 和 Flash Card 可以被穩定保存與練習。
 
 ## Notion Block Builder
 

@@ -149,6 +149,42 @@ class LearningDataStabilityTests(unittest.TestCase):
             self.assertEqual(session.query(QuizAttempt).count(), 1)
             self.assertEqual(session.query(FlashcardReview).count(), 1)
 
+    def test_subsection_learning_items_create_chapter_record(self) -> None:
+        note = self._chapter_note()
+        note.chapter_title = "線性代數｜向量"
+
+        result = database_service.save_chapter_learning_items(
+            "document-1",
+            "1-1",
+            note,
+        )
+
+        self.assertTrue(result["saved"])
+        self.assertEqual(result["added_quiz_count"], 1)
+        self.assertEqual(result["added_flashcard_count"], 1)
+
+        with self.session_factory() as session:
+            subsection = (
+                session.query(Chapter)
+                .filter(Chapter.source_chapter_id == "1-1")
+                .one()
+            )
+
+            self.assertEqual(subsection.title, "線性代數｜向量")
+            self.assertEqual(subsection.source, "selected_subsection")
+            self.assertEqual(
+                session.query(Quiz)
+                .filter(Quiz.chapter_id == subsection.id)
+                .count(),
+                1,
+            )
+            self.assertEqual(
+                session.query(Flashcard)
+                .filter(Flashcard.chapter_id == subsection.id)
+                .count(),
+                1,
+            )
+
     def test_duplicate_cleanup_reassigns_history(self) -> None:
         with self.session_factory() as session:
             quiz_1 = Quiz(

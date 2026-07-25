@@ -37,7 +37,13 @@ flowchart TD
 
 ## 4. 主章節偵測
 
-`detect_chapters()` 會辨識 Module、Chapter、第 N 章，處理 PDF 字元分隔、目錄標題映射、跨行標題、目錄與正文重複序列、相同標題不同編號，以及兩位數 Module。輸出包含 ID、順序、標題、來源、索引和內容。
+`detect_chapters()` 會辨識 Module、Chapter、第 N 章，處理 PDF 字元分隔、目錄標題映射、跨行標題、目錄與正文重複序列、相同標題不同編號，以及兩位數 Module。若同一份教材包含多組獨立序列，例如 Python Module 1～10 後接 PyMySQL Chapter 1～4，系統會保留兩組章節並在寫入前轉成唯一 ID。輸出包含 ID、順序、標題、來源、索引和內容。
+
+子章節偵測會先讀取主章節開頭的子章節目錄。若目錄明確存在，例如「向量、內積、矩陣、語言模型運作」或「深度學習優化策略、微分、偏微分與梯度」，系統會以這些教學單元作為子章節層級，再用後續投影片標題輔助定位內容切點。這避免把每一頁小標題都切成獨立筆記，也讓使用者能選擇「整章濃縮」或「單一子章節深入」。
+
+若章節內沒有明確子章節目錄或可靠的小節標題，系統會回傳空的 `subsections`，只保留主章節。頁碼、圖片說明、程式碼語言標籤、互動式提示字元與投影片短句都不會被拿來硬切子章節。
+
+編號型子章節也會檢查是否屬於目前主章節，例如第 4 章只接受 `4.1`、`4-1` 這類小節。這可以避免 SQL 日期範圍、版本號、文件段落編號如 `1970-01-01` 或 `9.1.7 NULL Values` 被誤判成子章節。
 
 ## 5. 整份文件 AI 分析
 
@@ -61,7 +67,7 @@ PDF 視覺快取會把 AI 解讀文字和圖片本體分開保存：JSON 內保�
 
 ## 9. Notion 匯出
 
-`create_document_learning_notebook()` 建立父頁與逐章子頁，將 Pydantic Model 轉成原生 Callout、Toggle、Code、Table 和 Image。`export_state_service.py` 記錄父頁、成功與失敗章節，續跑只處理未完成部分。
+`create_document_learning_notebook()` 建立父頁與逐章子頁，將 Pydantic Model 轉成原生 Callout、Toggle、Code、Table 和 Image。使用者可傳入主章節或子章節作為筆記目標；兩者都會建立在同一份文件父頁底下。`export_state_service.py` 記錄父頁、成功與失敗章節，續跑只處理未完成部分。
 
 ## 10. SQLite 同步
 

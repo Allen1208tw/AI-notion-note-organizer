@@ -214,6 +214,13 @@ def looks_like_title_continuation(
         return False
 
     if re.match(
+        r"^\s*(section|sec\.?)\s*\d+",
+        normalized,
+        flags=re.IGNORECASE,
+    ):
+        return False
+
+    if re.match(
         r"^\s*第\s*[\d一二三四五六七八九十]+\s*[章節]",
         normalized,
     ):
@@ -336,24 +343,7 @@ def find_next_meaningful_title_lines(
                 "及",
             )
         ):
-            # 若這一行已像完整標題，仍允許下一行為短標題補充；
-            # 但只在下一行非常短且同樣像標題時合併。
-            if next_index + 1 < upper_bound:
-                next_line = normalize_heading_text(
-                    line_positions[
-                        next_index + 1
-                    ][0]
-                )
-
-                if not (
-                    1 <= len(next_line) <= 20
-                    and looks_like_title_continuation(
-                        next_line
-                    )
-                ):
-                    break
-            else:
-                break
+            break
 
     if not collected_lines:
         return "", line_positions[
@@ -626,18 +616,6 @@ def extract_module_style_headings(text: str) -> list[HeadingMatch]:
             title,
             chapter_number,
         ):
-            toc_title = toc_map.get(
-                chapter_number,
-                "",
-            )
-
-            if toc_title:
-                title = toc_title
-
-        if is_generic_chapter_title(
-            title,
-            chapter_number,
-        ):
             (
                 next_line_title,
                 next_line_end_index,
@@ -651,6 +629,18 @@ def extract_module_style_headings(text: str) -> list[HeadingMatch]:
                 resolved_end_index = (
                     next_line_end_index
                 )
+
+        if is_generic_chapter_title(
+            title,
+            chapter_number,
+        ):
+            toc_title = toc_map.get(
+                chapter_number,
+                "",
+            )
+
+            if toc_title:
+                title = toc_title
 
         if is_generic_chapter_title(
             title,
@@ -704,7 +694,7 @@ def extract_numbered_chapter_headings(text: str) -> list[HeadingMatch]:
     line_positions = line_start_positions(text)
 
     numbered_pattern = re.compile(
-        r"^\s*(?P<number>\d{1,2})\s*[.、]\s*(?P<title>.+?)\s*$"
+        r"^\s*(?P<number>\d{1,2})(?!\.\d)\s*[.、]\s*(?P<title>.+?)\s*$"
     )
 
     chinese_chapter_pattern = re.compile(
@@ -753,7 +743,17 @@ def extract_numbered_chapter_headings(text: str) -> list[HeadingMatch]:
                     )
                 )
 
-    return deduplicate_heading_matches(matches)
+    matches = deduplicate_heading_matches(matches)
+    chinese_chapter_matches = [
+        match
+        for match in matches
+        if match.source == "chinese_chapter_heading"
+    ]
+
+    if len(chinese_chapter_matches) >= 2:
+        return chinese_chapter_matches
+
+    return matches
 
 
 def extract_toc_titles(text: str) -> list[str]:
@@ -775,7 +775,7 @@ def extract_toc_titles(text: str) -> list[str]:
     toc_titles: list[str] = []
 
     numbered_pattern = re.compile(
-        r"^\s*(?P<number>\d{1,2})\s*[.、]\s*(?P<title>.+?)\s*$"
+        r"^\s*(?P<number>\d{1,2})(?!\.\d)\s*[.、]\s*(?P<title>.+?)\s*$"
     )
 
     max_scan_lines = min(
@@ -1294,13 +1294,102 @@ def select_primary_module_sequence(
                 later_start_bonus,
             )
 
-        best_candidate = max(
-            candidates,
-            key=candidate_score,
+        def candidate_signature(
+            candidate: list[HeadingMatch],
+        ) -> tuple[tuple[int | None, str], ...]:
+            return tuple(
+                (
+                    chapter_number_to_int(
+                        heading.chapter_number
+                    ),
+                    normalize_for_compare(
+                        heading.title
+                    ),
+                )
+                for heading in candidate
+            )
+
+        best_by_signature: dict[
+            tuple[tuple[int | None, str], ...],
+            list[HeadingMatch],
+        ] = {}
+
+        for candidate in candidates:
+            if len(candidate) < 2:
+                continue
+
+            signature = candidate_signature(
+                candidate
+            )
+
+            existing_candidate = best_by_signature.get(
+                signature
+            )
+
+            if (
+                existing_candidate is None
+                or candidate_score(candidate)
+                > candidate_score(existing_candidate)
+            ):
+                best_by_signature[signature] = candidate
+
+        unique_candidates = sorted(
+            best_by_signature.values(),
+            key=lambda candidate: (
+                candidate[0].start_index,
+                -len(candidate),
+            ),
         )
 
-        if len(best_candidate) >= 2:
-            return best_candidate
+        selected_candidates: list[
+            list[HeadingMatch]
+        ] = []
+
+        for candidate in unique_candidates:
+            candidate_start = (
+                candidate[0].start_index
+            )
+
+            candidate_end = (
+                candidate[-1].start_index
+            )
+
+            overlaps_existing = False
+
+            for selected in selected_candidates:
+                selected_start = (
+                    selected[0].start_index
+                )
+
+                selected_end = (
+                    selected[-1].start_index
+                )
+
+                if (
+                    candidate_start <= selected_end
+                    and selected_start <= candidate_end
+                ):
+                    overlaps_existing = True
+                    break
+
+            if overlaps_existing:
+                continue
+
+            selected_candidates.append(
+                candidate
+            )
+
+        selected_headings = [
+            heading
+            for candidate in selected_candidates
+            for heading in candidate
+        ]
+
+        if len(selected_headings) >= 2:
+            return sorted(
+                selected_headings,
+                key=lambda heading: heading.start_index,
+            )
 
     runs: list[
         list[HeadingMatch]
@@ -1482,7 +1571,7 @@ def build_chapters_from_headings(
             "end_index": content_end,
             "subsections": detect_subsections(
                 content,
-                parent_chapter_id=str(index),
+                parent_chapter_id=resolved_chapter_id,
             ),
         }
 
@@ -1495,27 +1584,425 @@ def detect_subsections(
     chapter_content: str,
     parent_chapter_id: str,
 ) -> list[dict]:
-    """
-    偵測子章節。
+    """偵測可獨立產生筆記的子章節標題。"""
 
-    這版會避免把每一頁重複出現的主標題當成子章節。
-    """
+    def _is_valid_subsection_title(title: str) -> bool:
+        normalized = normalize_heading_text(title)
+
+        if not normalized:
+            return False
+
+        if is_noise_line(normalized):
+            return False
+
+        if len(normalized) < 2 or len(normalized) > 80:
+            return False
+
+        if normalized.lower() in {
+            "py",
+            "python",
+            "sql",
+            "cmd",
+            "bash",
+            "powershell",
+        }:
+            return False
+
+        if normalized.startswith(
+            (
+                "圖:",
+                "圖：",
+                "•",
+                "●",
+                "⚫",
+                "#",
+                ">>>",
+            )
+        ):
+            return False
+
+        if re.fullmatch(r"[\d\s.,+\-*/=()（）％%]+", normalized):
+            return False
+
+        if re.match(
+            r"^\d{4}-\d{2}-\d{2}\b",
+            normalized,
+        ):
+            return False
+
+        if re.match(
+            r"^\d{1,2}:\d{2}:\d{2}(?:\.\d+)?\b",
+            normalized,
+        ):
+            return False
+
+        if not re.search(r"[\u4e00-\u9fffA-Za-z]", normalized):
+            return False
+
+        if "=" in normalized and len(normalized) <= 20:
+            return False
+
+        if "×" in normalized and len(normalized) <= 20:
+            return False
+
+        formula_symbols = set("∙⋯⋮⋱෦𝑎𝑏𝑐𝑑𝑒𝑓𝑔𝑥𝑦𝑧𝑣𝑤𝑞𝑘𝑢𝜋𝜇")
+
+        if (
+            len(normalized) <= 8
+            and any(char in formula_symbols for char in normalized)
+        ):
+            return False
+
+        if normalized in {
+            "輸入",
+            "輸出",
+            "模型",
+            "文字",
+            "圖片",
+            "音訊",
+            "Loss",
+            "Softmax",
+            "token",
+        }:
+            return False
+
+        return True
 
     subsections: list[dict] = []
     line_positions = line_start_positions(chapter_content)
 
     subsection_matches: list[HeadingMatch] = []
 
-    subsection_patterns = [
-        re.compile(
-            r"^\s*(?P<number>\d+[-.]\d+)\s*[：:.\-、]?\s*(?P<title>.+?)\s*$"
-        ),
-        re.compile(
-            r"^\s*[●]\s*(?P<title>.+?)\s*$"
-        ),
-    ]
+    def _next_title_after(
+        start_line_index: int,
+        max_lookahead: int = 4,
+    ) -> tuple[str, int]:
+        for next_index in range(
+            start_line_index + 1,
+            min(len(line_positions), start_line_index + 1 + max_lookahead),
+        ):
+            next_line, _, next_end_index = line_positions[next_index]
+            candidate = clean_heading_title(next_line)
 
-    for line, start_index, end_index in line_positions:
+            if _is_valid_subsection_title(candidate):
+                return candidate, next_end_index
+
+        return "", line_positions[start_line_index][2]
+
+    def _extract_front_outline_matches() -> list[HeadingMatch]:
+        """讀取章節開頭的子章節目錄。"""
+
+        outline_matches: list[HeadingMatch] = []
+        uses_section_outline = False
+        index = 0
+
+        while index < len(line_positions):
+            line, start_index, end_index = line_positions[index]
+            normalized_line = normalize_heading_text(line)
+
+            if start_index > 900:
+                break
+
+            if outline_matches and not normalized_line:
+                break
+
+            if outline_matches and re.fullmatch(
+                r"\d{1,4}",
+                normalized_line,
+            ):
+                break
+
+            section_match = section_pattern.match(normalized_line)
+
+            if section_match:
+                title = clean_heading_title(
+                    section_match.group("title") or ""
+                )
+
+                if _is_valid_subsection_title(title):
+                    uses_section_outline = True
+                    outline_matches.append(
+                        HeadingMatch(
+                            title=title,
+                            source="front_outline",
+                            start_index=start_index,
+                            end_index=end_index,
+                            chapter_number=section_match.group("number"),
+                        )
+                    )
+
+                index += 1
+                continue
+
+            if uses_section_outline and re.fullmatch(
+                r"\d+\.",
+                normalized_line,
+            ):
+                index += 2
+                continue
+
+            if re.fullmatch(r"\d+\.", normalized_line):
+                title, resolved_end_index = _next_title_after(
+                    index,
+                    max_lookahead=2,
+                )
+
+                if _is_valid_subsection_title(title):
+                    outline_matches.append(
+                        HeadingMatch(
+                            title=title,
+                            source="front_outline",
+                            start_index=start_index,
+                            end_index=resolved_end_index,
+                            chapter_number=str(
+                                len(outline_matches) + 1
+                            ),
+                        )
+                    )
+
+                    index += 2
+                    continue
+
+            index += 1
+
+        return outline_matches
+
+    def _outline_alias_titles(title: str) -> list[str]:
+        """章節目錄標題與投影片小標題之間的定位輔助。"""
+
+        alias_map = {
+            "語言模型運作": [
+                "語言模型運作",
+                "計算相關性",
+                "加權和",
+            ],
+            "深度學習優化策略": [
+                "模型如何學會做好預測",
+                "深度學習模型與訓練機制",
+                "Loss 如何量化",
+            ],
+            "微分": [
+                "平均變化率",
+                "導數與瞬間變化率",
+                "線性函數的微分",
+            ],
+            "偏微分與梯度": [
+                "多變數最佳化問題",
+                "偏微分",
+                "梯度",
+            ],
+            "連鎖律": [
+                "深度神經網路與梯度計算",
+                "前向傳播與擾動傳遞",
+                "連鎖律",
+            ],
+            "反向傳播": [
+                "反向傳播",
+            ],
+            "記憶體管理": [
+                "梯度計算資訊流與記憶體依賴性",
+                "記憶體瓶頸",
+                "梯度檢查點",
+            ],
+        }
+
+        title_key = normalize_for_compare(title)
+
+        for key, aliases in alias_map.items():
+            if normalize_for_compare(key) == title_key:
+                return aliases
+
+        return [title]
+
+    def _match_title_by_alias(
+        candidate_title: str,
+        outline_title: str,
+    ) -> bool:
+        candidate_key = normalize_for_compare(candidate_title)
+
+        if not candidate_key:
+            return False
+
+        for alias in _outline_alias_titles(outline_title):
+            alias_key = normalize_for_compare(alias)
+
+            if (
+                candidate_key == alias_key
+                or candidate_key.startswith(alias_key)
+                or alias_key in candidate_key
+            ):
+                return True
+
+        return False
+
+    def _number_belongs_to_parent(
+        number: str,
+    ) -> bool:
+        """Only accept decimal subsection numbers under the current chapter."""
+
+        parent_number = chapter_number_to_int(
+            str(parent_chapter_id).split("-")[0]
+        )
+
+        if parent_number is None:
+            return True
+
+        normalized_number = str(number or "").strip()
+
+        if not normalized_number:
+            return False
+
+        parts = re.split(r"[-.]", normalized_number)
+
+        if len(parts) < 2:
+            return False
+
+        if not parts[0].isdigit():
+            return False
+
+        return int(parts[0]) == parent_number
+
+    def _find_outline_alias_match(
+        outline_match: HeadingMatch,
+        outline_end: int,
+        min_start: int,
+    ) -> HeadingMatch | None:
+        """Find the first real content heading that matches an outline title."""
+
+        for line, start_index, end_index in line_positions:
+            if start_index <= outline_end or start_index <= min_start:
+                continue
+
+            candidate = clean_heading_title(line)
+
+            if not _is_valid_subsection_title(candidate):
+                continue
+
+            if not _match_title_by_alias(
+                candidate,
+                outline_match.title,
+            ):
+                continue
+
+            return HeadingMatch(
+                title=outline_match.title,
+                source="front_outline",
+                start_index=start_index,
+                end_index=end_index,
+                chapter_number=outline_match.chapter_number,
+            )
+
+        return None
+
+    def _resolve_front_outline_matches(
+        outline_matches: list[HeadingMatch],
+        detail_matches: list[HeadingMatch],
+    ) -> list[HeadingMatch]:
+        """用開頭目錄決定子章節層級，並用正文小標題定位切點。"""
+
+        if len(outline_matches) < 2:
+            return []
+
+        outline_end = max(
+            match.end_index
+            for match in outline_matches
+        )
+        resolved_matches: list[HeadingMatch] = []
+        last_start = -1
+
+        for index, outline_match in enumerate(outline_matches):
+            title_key = normalize_for_compare(
+                outline_match.title
+            )
+            exact_match = next(
+                (
+                    match
+                    for match in detail_matches
+                    if (
+                        match.start_index > outline_end
+                        and normalize_for_compare(match.title)
+                        == title_key
+                        and match.start_index > last_start
+                    )
+                ),
+                None,
+            )
+
+            alias_match = exact_match or next(
+                (
+                    match
+                    for match in detail_matches
+                    if (
+                        match.start_index > outline_end
+                        and match.start_index > last_start
+                        and _match_title_by_alias(
+                            match.title,
+                            outline_match.title,
+                        )
+                    )
+                ),
+                None,
+            )
+
+            alias_match = alias_match or _find_outline_alias_match(
+                outline_match=outline_match,
+                outline_end=outline_end,
+                min_start=last_start,
+            )
+
+            if alias_match is not None:
+                start_index = alias_match.start_index
+                end_index = alias_match.end_index
+            elif index == 0:
+                start_index = outline_end
+                end_index = outline_match.end_index
+            else:
+                start_index = outline_match.start_index
+                end_index = outline_match.end_index
+
+            if start_index <= last_start:
+                start_index = max(
+                    last_start + 1,
+                    outline_match.start_index,
+                )
+
+            if start_index >= len(chapter_content):
+                continue
+
+            resolved_matches.append(
+                HeadingMatch(
+                    title=outline_match.title,
+                    source="front_outline",
+                    start_index=start_index,
+                    end_index=end_index,
+                    chapter_number=outline_match.chapter_number,
+                )
+            )
+            last_start = start_index
+
+        return resolved_matches
+
+    section_pattern = re.compile(
+        r"^\s*(?P<prefix>section|sec\.?)\s*"
+        r"(?P<number>\d+(?:\.\d+)*)"
+        r"[\s：:.\-、]*"
+        r"(?P<title>.*?)\s*$",
+        flags=re.IGNORECASE,
+    )
+
+    numbered_title_pattern = re.compile(
+        r"^\s*(?P<number>\d+(?:[-.]\d+)+)"
+        r"[\s：:.\-、]+"
+        r"(?P<title>.+?)\s*$"
+    )
+
+    chinese_numbered_title_pattern = re.compile(
+        r"^\s*(?P<number>\d+)\s*[、]\s*(?P<title>.+?)\s*$"
+    )
+
+    outline_matches = _extract_front_outline_matches()
+
+    for line_index, (line, start_index, end_index) in enumerate(line_positions):
         normalized_line = normalize_heading_text(line)
 
         if is_noise_line(normalized_line):
@@ -1524,7 +2011,29 @@ def detect_subsections(
         if len(normalized_line) > 100:
             continue
 
-        for pattern in subsection_patterns:
+        match = section_pattern.match(normalized_line)
+
+        if match:
+            title = clean_heading_title(match.group("title") or "")
+            resolved_end_index = end_index
+
+            if not _is_valid_subsection_title(title):
+                title, resolved_end_index = _next_title_after(line_index)
+
+            if _is_valid_subsection_title(title):
+                subsection_matches.append(
+                    HeadingMatch(
+                        title=title,
+                        source="section_heading",
+                        start_index=start_index,
+                        end_index=resolved_end_index,
+                        chapter_number=match.group("number"),
+                    )
+                )
+
+            continue
+
+        for pattern in (numbered_title_pattern, chinese_numbered_title_pattern):
             match = pattern.match(normalized_line)
 
             if not match:
@@ -1534,11 +2043,17 @@ def detect_subsections(
                 match.group("title")
             )
 
-            if not title:
+            number = match.groupdict().get(
+                "number",
+                "",
+            )
+
+            if not _number_belongs_to_parent(number):
                 continue
 
-            if len(title) > 80:
+            if not _is_valid_subsection_title(title):
                 continue
+
 
             subsection_matches.append(
                 HeadingMatch(
@@ -1546,17 +2061,37 @@ def detect_subsections(
                     source="subsection_heading",
                     start_index=start_index,
                     end_index=end_index,
-                    chapter_number=match.groupdict().get(
-                        "number",
-                        "",
-                    ),
+                    chapter_number=number,
                 )
             )
 
             break
 
+    if outline_matches:
+        resolved_outline_matches = _resolve_front_outline_matches(
+            outline_matches=outline_matches,
+            detail_matches=subsection_matches,
+        )
+
+        if len(resolved_outline_matches) >= 2:
+            subsection_matches = resolved_outline_matches
+
     subsection_matches = deduplicate_heading_matches(
         subsection_matches
+    )
+
+    latest_by_title: dict[str, HeadingMatch] = {}
+
+    for match in subsection_matches:
+        title_key = normalize_for_compare(match.title)
+        existing = latest_by_title.get(title_key)
+
+        if existing is None or match.start_index > existing.start_index:
+            latest_by_title[title_key] = match
+
+    subsection_matches = sorted(
+        latest_by_title.values(),
+        key=lambda item: item.start_index,
     )
 
     subsection_matches = collapse_repeated_running_headers(
@@ -1568,7 +2103,7 @@ def detect_subsections(
         min_distance=50,
     )
 
-    if not subsection_matches:
+    if len(subsection_matches) < 2:
         return []
 
     for index, heading in enumerate(

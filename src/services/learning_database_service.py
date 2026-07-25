@@ -458,6 +458,60 @@ def _find_chapter_record(
     return session.execute(statement).scalars().first()
 
 
+def _create_subsection_chapter_record(
+    session,
+    document_id: int | str,
+    source_chapter_id: str,
+    chapter_note,
+) -> Optional[Chapter]:
+    """為子章節生成目標建立可關聯 Quiz / Flash Cards 的 Chapter。"""
+
+    source_id = str(source_chapter_id or "").strip()
+
+    if "-" not in source_id:
+        return None
+
+    max_order = (
+        session.query(func.max(Chapter.chapter_order))
+        .filter(Chapter.document_id == document_id)
+        .scalar()
+        or 0
+    )
+
+    title = str(
+        getattr(chapter_note, "chapter_title", "")
+        or getattr(chapter_note, "title", "")
+        or f"子章節 {source_id}"
+    ).strip()
+
+    now = utc_now()
+    chapter_data = {
+        "document_id": str(document_id),
+        "source_chapter_id": source_id,
+        "chapter_order": int(max_order) + 1,
+        "title": title,
+        "source": "selected_subsection",
+        "start_index": None,
+        "end_index": None,
+        "character_count": 0,
+        "subsection_count": 0,
+        "export_status": "pending",
+        "visual_cache_status": "pending",
+        "note_cache_status": "pending",
+        "created_at": now,
+        "updated_at": now,
+    }
+    chapter_data = _maybe_add_id(Chapter, chapter_data)
+
+    chapter = Chapter(
+        **_filter_model_kwargs(Chapter, chapter_data)
+    )
+    session.add(chapter)
+    session.flush()
+
+    return chapter
+
+
 def _normalize_export_chapter_items(items) -> list[dict]:
     """Return export chapter results as dictionaries."""
 
@@ -630,16 +684,24 @@ def save_chapter_learning_items(
             )
 
             if chapter is None:
-                return {
-                    "saved": False,
-                    "reason": "找不到對應章節",
-                    "quiz_count": 0,
-                    "flashcard_count": 0,
-                    "added_quiz_count": 0,
-                    "added_flashcard_count": 0,
-                    "skipped_quiz_count": 0,
-                    "skipped_flashcard_count": 0,
-                }
+                chapter = _create_subsection_chapter_record(
+                    session=session,
+                    document_id=document_id,
+                    source_chapter_id=str(source_chapter_id),
+                    chapter_note=chapter_note,
+                )
+
+                if chapter is None:
+                    return {
+                        "saved": False,
+                        "reason": "找不到對應章節",
+                        "quiz_count": 0,
+                        "flashcard_count": 0,
+                        "added_quiz_count": 0,
+                        "added_flashcard_count": 0,
+                        "skipped_quiz_count": 0,
+                        "skipped_flashcard_count": 0,
+                    }
 
             prepared_quizzes, skipped_quiz_count = prepare_unique_quizzes(
                 chapter_note

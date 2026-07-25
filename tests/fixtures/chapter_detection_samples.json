@@ -1,0 +1,136 @@
+[
+  {
+    "name": "english_module_with_front_outline",
+    "text": "Module 1. Neural Networks\n1. Forward Pass\n2. Loss Functions\n\nSection 1.\nForward Pass\nForward pass content.\n\nSection 2.\nLoss Functions\nLoss content.\n\nModule 2. Evaluation\n1. Accuracy\n2. Confusion Matrix\n\nSection 1.\nAccuracy\nAccuracy content.\n\nSection 2.\nConfusion Matrix\nMatrix content.",
+    "expected_chapters": [
+      {
+        "title": "Neural Networks",
+        "subsections": ["Forward Pass", "Loss Functions"]
+      },
+      {
+        "title": "Evaluation",
+        "subsections": ["Accuracy", "Confusion Matrix"]
+      }
+    ]
+  },
+  {
+    "name": "chinese_chapter_with_decimal_subsections",
+    "text": "第 1 章 網頁基礎\n1.\nHTML 結構\n2.\nCSS 樣式\n\n1.1 HTML 結構\nHTML content.\n1.2 CSS 樣式\nCSS content.\n\n第 2 章 JavaScript 入門\n1.\n變數\n2.\n函式\n\n2.1 變數\nVariable content.\n2.2 函式\nFunction content.",
+    "expected_chapters": [
+      {
+        "title": "網頁基礎",
+        "subsections": ["HTML 結構", "CSS 樣式"]
+      },
+      {
+        "title": "JavaScript 入門",
+        "subsections": ["變數", "函式"]
+      }
+    ]
+  },
+  {
+    "name": "chapter_without_front_outline_uses_decimal_subsections",
+    "text": "Chapter 1. 資料清理\n\n1.1 缺失值處理\n缺失值處理內容。\n1.2 離群值處理\n離群值處理內容。\n\nChapter 2. 模型訓練\n\n2.1 訓練集切分\n訓練集切分內容。\n2.2 參數調整\n參數調整內容。",
+    "expected_chapters": [
+      {
+        "title": "資料清理",
+        "subsections": ["缺失值處理", "離群值處理"]
+      },
+      {
+        "title": "模型訓練",
+        "subsections": ["訓練集切分", "參數調整"]
+      }
+    ]
+  },
+  {
+    "name": "same_titles_with_different_chapter_numbers_are_kept",
+    "text": "Module 1. CSS 基礎應用\n1.\n選擇器\n2.\n顏色\n\nSection 1.\n選擇器\n選擇器內容。\nSection 2.\n顏色\n顏色內容。\n\nModule 2. CSS 基礎應用\n1.\n方塊模型\n2.\n排版\n\nSection 1.\n方塊模型\n方塊模型內容。\nSection 2.\n排版\n排版內容。",
+    "expected_chapters": [
+      {
+        "title": "CSS 基礎應用",
+        "subsections": ["選擇器", "顏色"]
+      },
+      {
+        "title": "CSS 基礎應用",
+        "subsections": ["方塊模型", "排版"]
+      }
+    ]
+  },
+  {
+    "name": "machine_learning_math_style_slide_outline",
+    "text": "Chapter 1.\n線性代數\n1.\n向量\n2.\n內積\n3.\n矩陣\n4.\n語言模型運作\n\n8\nSection 1.\n向量\n向量與空間\n向量內容\n9\nSection 2.\n內積\n內積內容\n10\nSection 3.\n矩陣\n矩陣內容\n11\n計算相關性\n語言模型內容\n\nChapter 2.\n微分\n1.\n深度學習優化策略\n2.\n微分\n3.\n偏微分與梯度\n4.\n連鎖律\n5.\n反向傳播\n6.\n記憶體管理\n\n92\nLoss 如何量化？\n最佳化內容\n93\n平均變化率\n微分內容\n94\n多變數最佳化問題\n偏微分內容\n95\n連鎖律(Chain Rule)\n連鎖律內容\n96\n反向傳播(Backpropagation)\n反向傳播內容\n97\n記憶體瓶頸\n記憶體內容\n\nChapter 3.\n統計\nSec. 1 數據輪廓\n1.\n敘述性統計\n2.\n資料判讀\nSec. 2 模型評估\n1.\n迴歸模型\n2.\n分類模型\n\n124\nSection 1.\n數據輪廓\n數據內容\n125\nSection 2.\n模型評估\n模型內容",
+    "expected_chapters": [
+      {
+        "title": "線性代數",
+        "subsections": ["向量", "內積", "矩陣", "語言模型運作"]
+      },
+      {
+        "title": "微分",
+        "subsections": ["深度學習優化策略", "微分", "偏微分與梯度", "連鎖律", "反向傳播", "記憶體管理"]
+      },
+      {
+        "title": "統計",
+        "subsections": ["數據輪廓", "模型評估"]
+      }
+    ]
+  },
+  {
+    "name": "python_course_without_clear_subsections_returns_main_chapters_only",
+    "text": "Module 1.\nPython 技術及開發環境介紹\n12\n圖: python.org 首頁\n>>> 17 / 3\nVisual Studio Code\npy\nprint('hello')\n\nModule 2.\n資料型態與變數\n1.\npy\nint float str list dict\n# comment\n>>> type(123)\n\nModule 3.\n控制結構\nfor while if else\n```py\nif True:\n    print('ok')\n```",
+    "expected_chapters": [
+      {
+        "title": "Python 技術及開發環境介紹",
+        "subsections": []
+      },
+      {
+        "title": "資料型態與變數",
+        "subsections": []
+      },
+      {
+        "title": "控制結構",
+        "subsections": []
+      }
+    ]
+  },
+  {
+    "name": "mysql_sql_literals_and_manual_section_numbers_are_not_subsections",
+    "text": "第 4 章 表格(Tables)\n表格中欄位與資料列的介紹。\n1. 數字型別(Numeric Data Types)\nINT, BIGINT, SMALLINT。\n2. 日期型別(Date and Time Types)\nTIMESTAMP\n1970-01-01 00:00:01.000000 UTC\n~ 2038-01-19 03:14:07.999999 UTC\n9.1.7 NULL Values\nThe NULL value means no data.\n3. 文字型別(String Data Types)\nCHAR, VARCHAR, TEXT。\n\n第 5 章 空值與預設值(Null & Default)\n空值與預設值介紹。",
+    "expected_chapters": [
+      {
+        "title": "表格(Tables)",
+        "subsections": []
+      },
+      {
+        "title": "空值與預設值(Null & Default)",
+        "subsections": []
+      }
+    ]
+  },
+  {
+    "name": "clear_decimal_subsections_belong_to_current_chapter",
+    "text": "Chapter 2. 資料前處理\n2.1 缺失值處理\n缺失值內容。\n2.2 離群值處理\n離群值內容。\n3.1 不屬於本章的編號\n這行不應該切到第二章。\n\nChapter 3. 模型訓練\n3.1 訓練集切分\n訓練集內容。\n3.2 參數調整\n參數調整內容。",
+    "expected_chapters": [
+      {
+        "title": "資料前處理",
+        "subsections": ["缺失值處理", "離群值處理"]
+      },
+      {
+        "title": "模型訓練",
+        "subsections": ["訓練集切分", "參數調整"]
+      }
+    ]
+  },
+  {
+    "name": "clear_section_headings_create_subsections",
+    "text": "Module 1. Neural Networks\nSection 1. Forward Pass\nForward pass content.\nSection 2. Loss Functions\nLoss content.\n\nModule 2. Evaluation\nSection 1. Accuracy\nAccuracy content.\nSection 2. Confusion Matrix\nMatrix content.",
+    "expected_chapters": [
+      {
+        "title": "Neural Networks",
+        "subsections": ["Forward Pass", "Loss Functions"]
+      },
+      {
+        "title": "Evaluation",
+        "subsections": ["Accuracy", "Confusion Matrix"]
+      }
+    ]
+  }
+]
