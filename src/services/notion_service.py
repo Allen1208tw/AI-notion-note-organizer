@@ -4,19 +4,18 @@ from notion_client import Client
 
 from src.config.settings import NOTION_API_KEY, NOTION_PARENT_PAGE_ID
 from src.models.analysis_models import AnalysisResult
+from src.services.app_configuration_service import (
+    validate_notion_parent_page_id,
+    validate_notion_token,
+)
 from src.validators.mermaid_validator import validate_mermaid
 
 
 def get_notion_client() -> Client:
     """建立 Notion API 客戶端。"""
 
-    if not NOTION_API_KEY:
-        raise ValueError("找不到 NOTION_API_KEY，請檢查 .env 設定。")
-
-    if not NOTION_PARENT_PAGE_ID:
-        raise ValueError("找不到 NOTION_PARENT_PAGE_ID，請檢查 .env 設定。")
-
-    return Client(auth=NOTION_API_KEY)
+    validate_notion_parent_page_id(NOTION_PARENT_PAGE_ID)
+    return Client(auth=validate_notion_token(NOTION_API_KEY))
 
 
 def text_content(content: str) -> list[dict]:
@@ -170,7 +169,7 @@ def create_notion_page(
     response = client.pages.create(
         parent={
             "type": "page_id",
-            "page_id": NOTION_PARENT_PAGE_ID,
+            "page_id": validate_notion_parent_page_id(NOTION_PARENT_PAGE_ID),
         },
         properties={
             "title": {

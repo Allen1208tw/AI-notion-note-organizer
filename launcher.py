@@ -108,11 +108,15 @@ def _check_environment() -> list[str]:
     if not BACKGROUND_WORKER_FILE.exists():
         errors.append(f"找不到背景 Worker：{BACKGROUND_WORKER_FILE.name}")
 
-    missing_packages = [
-        package_name
-        for module_name, package_name in REQUIRED_MODULES.items()
-        if importlib.util.find_spec(module_name) is None
-    ]
+    missing_packages = []
+    for module_name, package_name in REQUIRED_MODULES.items():
+        try:
+            module_is_available = importlib.util.find_spec(module_name) is not None
+        except ModuleNotFoundError:
+            module_is_available = False
+
+        if not module_is_available:
+            missing_packages.append(package_name)
 
     if missing_packages:
         errors.append(

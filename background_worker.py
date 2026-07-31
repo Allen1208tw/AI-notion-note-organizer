@@ -108,6 +108,22 @@ def _run_notion_export(job_id: str, payload: dict) -> dict:
 
     if document_id:
         update_document_export_result(str(document_id), result)
+
+    if not bool(result.get("is_finished", False)):
+        completed_count = int(result.get("completed_chapter_count", 0) or 0)
+        failed_items = list(result.get("failed_this_run") or [])
+        first_error = ""
+        if failed_items and isinstance(failed_items[0], dict):
+            first_error = str(failed_items[0].get("error") or "").strip()
+
+        message = (
+            "Notion 背景匯出尚未全部完成："
+            f"目前完成 {completed_count} / {len(chapters)} 個 Module。"
+        )
+        if first_error:
+            message += f" 首個錯誤：{first_error}"
+        raise RuntimeError(message)
+
     return result
 
 

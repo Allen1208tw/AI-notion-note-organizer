@@ -6,7 +6,7 @@ from src.config.runtime_paths import ENV_FILE, OUTPUT_DIR, RESOURCE_DIR
 
 BASE_DIR = RESOURCE_DIR
 
-load_dotenv(ENV_FILE)
+load_dotenv(ENV_FILE, override=True)
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 OPENAI_CHUNK_MODEL = os.getenv("OPENAI_CHUNK_MODEL", "gpt-5-mini")
