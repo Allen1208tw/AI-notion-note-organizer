@@ -25,6 +25,7 @@ htmlcov/
 
 outputs/*
 !outputs/.gitkeep
+.superpowers/
 
 # Windows release artifacts
 
