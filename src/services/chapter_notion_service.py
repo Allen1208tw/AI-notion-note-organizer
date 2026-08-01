@@ -1040,6 +1040,48 @@ def _bulleted_item(text: str) -> list[dict]:
     return blocks
 
 
+
+_NOTION_CALLOUT_EMOJIS = (
+    "💡",
+    "⚠️",
+    "❗",
+    "✅",
+    "📌",
+    "📝",
+    "📘",
+    "🎯",
+    "🧠",
+    "⭐",
+    "📚",
+    "📊",
+    "💻",
+    "🧩",
+    "🖼️",
+    "🧪",
+    "🗺️",
+)
+
+
+def _normalize_notion_emoji(value: object) -> str:
+    """將 AI 或舊快取中的 icon 轉成 Notion 可接受的單一 emoji。"""
+
+    raw = str(value or "").strip()
+    if raw in _NOTION_CALLOUT_EMOJIS:
+        return raw
+
+    for emoji in _NOTION_CALLOUT_EMOJIS:
+        if raw.startswith(emoji):
+            return emoji
+
+    semantic_map = {
+        "info": "💡",
+        "tip": "💡",
+        "warning": "⚠️",
+        "success": "✅",
+        "error": "❗",
+        "rule": "📌",
+    }
+    return semantic_map.get(raw.lower(), "💡")
 def _callout(
     text: str,
     icon: str = "💡",
@@ -1054,7 +1096,7 @@ def _callout(
             "rich_text": _rich_text(text),
             "icon": {
                 "type": "emoji",
-                "emoji": icon,
+                "emoji": _normalize_notion_emoji(icon),
             },
             "color": color,
         },
