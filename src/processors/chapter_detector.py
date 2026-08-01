@@ -1509,6 +1509,55 @@ def ensure_unique_chapter_source_ids(
     return normalized_chapters
 
 
+
+def disambiguate_duplicate_chapter_titles(
+    chapters: list[dict],
+) -> list[dict]:
+    """為重複的主章節標題補上可靠的第一個子標題。"""
+
+    title_groups: dict[str, list[dict]] = {}
+
+    for chapter in chapters:
+        title = str(chapter.get("title") or "").strip()
+        key = normalize_for_compare(title)
+        if key:
+            title_groups.setdefault(key, []).append(chapter)
+
+    for duplicate_chapters in title_groups.values():
+        if len(duplicate_chapters) < 2:
+            continue
+
+        used_disambiguators: set[str] = set()
+        base_title = str(
+            duplicate_chapters[0].get("title") or ""
+        ).strip()
+
+        for chapter in duplicate_chapters:
+            candidates: list[str] = []
+            for subsection in chapter.get("subsections") or []:
+                candidate = clean_heading_title(
+                    str(subsection.get("title") or "")
+                )
+                candidate_key = normalize_for_compare(candidate)
+                if (
+                    candidate
+                    and candidate_key != normalize_for_compare(base_title)
+                    and candidate_key not in used_disambiguators
+                    and not is_generic_chapter_title(candidate)
+                ):
+                    candidates.append(candidate)
+
+            if not candidates:
+                continue
+
+            disambiguator = candidates[0]
+            used_disambiguators.add(
+                normalize_for_compare(disambiguator)
+            )
+            chapter["title"] = f"{base_title}｜{disambiguator}"
+
+    return chapters
+
 def build_chapters_from_headings(
     text: str,
     headings: list[HeadingMatch],
@@ -1577,8 +1626,7 @@ def build_chapters_from_headings(
 
         chapters.append(chapter)
 
-    return chapters
-
+    return disambiguate_duplicate_chapter_titles(chapters)
 
 def detect_subsections(
     chapter_content: str,
