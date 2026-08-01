@@ -67,7 +67,7 @@ Name: "{autoprograms}\{#MyAppDisplayName} 使用說明"; Filename: "{app}\使用
 Name: "{autodesktop}\{#MyAppDisplayName}"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"; Tasks: desktopicon
 
 [Run]
-Filename: "{app}\{#MyAppExeName}"; Description: "啟動 {#MyAppDisplayName}"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\{#MyAppExeName}"; Description: "啟動 {#MyAppDisplayName}"; Flags: nowait postinstall
 
 [Code]
 function InitializeSetup(): Boolean;
