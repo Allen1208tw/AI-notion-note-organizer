@@ -76,7 +76,7 @@ var
 begin
   Exec(
     ExpandConstant('{cmd}'),
-    '/C taskkill /IM "{#MyAppExeName}" /F /T >NUL 2>NUL',
+    '/C taskkill /IM "{#MyAppExeName}" /F >NUL 2>NUL',
     '',
     SW_HIDE,
     ewWaitUntilTerminated,
