@@ -13,6 +13,7 @@ from src.services.chapter_cache_service import save_visual_context_cache
 from src.services.chapter_notion_service import (
     _clean_mermaid_code,
     _code_block,
+    _is_notion_page_usable,
 )
 from src.validators.mermaid_validator import sanitize_mermaid_for_notion
 
@@ -40,6 +41,38 @@ def _minimal_chapter_note(title: str) -> dict:
 
 
 class ChapterCacheAndNotionBlockTests(unittest.TestCase):
+    def test_archived_notion_parent_page_is_not_reused(self) -> None:
+        class FakePages:
+            def retrieve(self, page_id: str) -> dict:
+                return {
+                    "id": page_id,
+                    "archived": True,
+                    "in_trash": False,
+                }
+
+        class FakeNotion:
+            pages = FakePages()
+
+        self.assertFalse(
+            _is_notion_page_usable(FakeNotion(), "page-1")
+        )
+
+    def test_live_notion_parent_page_can_be_reused(self) -> None:
+        class FakePages:
+            def retrieve(self, page_id: str) -> dict:
+                return {
+                    "id": page_id,
+                    "archived": False,
+                    "in_trash": False,
+                }
+
+        class FakeNotion:
+            pages = FakePages()
+
+        self.assertTrue(
+            _is_notion_page_usable(FakeNotion(), "page-1")
+        )
+
     def test_single_existing_cache_is_not_reused_for_another_chapter(self) -> None:
         original_cache_dir = chapter_cache_service.CHAPTER_CACHE_DIR
 

@@ -1,15 +1,39 @@
 from openai import OpenAI
 
-from src.config.settings import OPENAI_API_KEY, OPENAI_MODEL
+from src.config.runtime_paths import ENV_FILE
+from src.config.settings import OPENAI_MODEL
+
+
+def _load_openai_api_key() -> str:
+    """每次建立 client 時重新讀取 .env，避免設定頁更新後仍使用舊 key。"""
+
+    try:
+        from dotenv import dotenv_values
+
+        value = str(
+            dotenv_values(ENV_FILE).get("OPENAI_API_KEY")
+            or ""
+        ).strip()
+    except Exception:
+        value = ""
+
+    if value:
+        return value
+
+    import os
+
+    return str(os.getenv("OPENAI_API_KEY") or "").strip()
 
 
 def get_openai_client() -> OpenAI:
     """建立 OpenAI API Client。"""
 
-    if not OPENAI_API_KEY:
+    api_key = _load_openai_api_key()
+
+    if not api_key:
         raise ValueError("找不到 OpenAI API Key，請檢查 .env 設定。")
 
-    return OpenAI(api_key=OPENAI_API_KEY)
+    return OpenAI(api_key=api_key)
 
 
 def test_openai_connection() -> str:

@@ -197,6 +197,45 @@ def _check_for_updates_in_background() -> None:
         print(f"自動更新檢查略過：{error}")
 
 
+def _process_is_running(pid: int | str | None) -> bool:
+    try:
+        pid_int = int(pid or 0)
+    except (TypeError, ValueError):
+        return False
+
+    if pid_int <= 0:
+        return False
+
+    try:
+        os.kill(pid_int, 0)
+        return True
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+
+
+def _load_worker_pid() -> int | None:
+    worker_state_file = OUTPUT_DIR / ".background_worker.json"
+
+    if not worker_state_file.exists():
+        return None
+
+    try:
+        state = json.loads(worker_state_file.read_text(encoding="utf-8"))
+        return int(state.get("pid") or 0)
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        return None
+
+
+def _worker_is_running() -> bool:
+    return _process_is_running(_load_worker_pid())
+
+
+def _start_background_worker() -> subprocess.Popen:
+    return subprocess.Popen(_worker_command(), cwd=PROJECT_DIR)
+
+
 def _wait_for_server(port: int, process: subprocess.Popen, timeout: float = 20) -> bool:
     deadline = time.monotonic() + timeout
 
@@ -260,6 +299,9 @@ def main() -> int:
     if running_port:
         url = f"http://127.0.0.1:{running_port}"
         print(f"應用程式已在執行：{url}")
+        if not _worker_is_running():
+            _start_background_worker()
+            print("Background worker started.")
         webbrowser.open(url)
         return 0
 
@@ -273,7 +315,7 @@ def main() -> int:
     try:
         while True:
             RESTART_REQUEST_FILE.unlink(missing_ok=True)
-            worker_process = subprocess.Popen(_worker_command(), cwd=PROJECT_DIR)
+            worker_process = _start_background_worker()
             process = subprocess.Popen(_streamlit_command(port), cwd=PROJECT_DIR)
 
             if not _wait_for_server(port, process):
@@ -299,7 +341,18 @@ def main() -> int:
                 ).start()
                 browser_opened = True
 
-            exit_code = process.wait()
+            exit_code = 0
+            while True:
+                streamlit_exit_code = process.poll()
+                if streamlit_exit_code is not None:
+                    exit_code = int(streamlit_exit_code or 0)
+                    break
+
+                if worker_process.poll() is not None:
+                    print("Background worker stopped; restarting.")
+                    worker_process = _start_background_worker()
+
+                time.sleep(1)
             process = None
             _terminate_process(worker_process)
             worker_process = None

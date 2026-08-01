@@ -160,6 +160,21 @@ def save_configuration(
         raise ValueError("OpenAI 分析模型與合併模型不可空白。")
 
     current = _read_values()
+    openai_input = str(openai_api_key or "").strip()
+    gemini_input = str(gemini_api_key or "").strip()
+    notion_input = str(notion_api_key or "").strip()
+
+    for label, secret_value in (
+        ("OpenAI API Key", openai_input),
+        ("Gemini API Key", gemini_input),
+        ("Notion Token", notion_input),
+    ):
+        if "*" in secret_value:
+            raise ValueError(
+                f"{label} 看起來是遮罩後的顯示值，"
+                "請貼上完整原始 Key，不要貼含有 * 的文字。"
+            )
+
     updates = {
         "AI_PROVIDER": provider,
         "OPENAI_CHUNK_MODEL": chunk_model,
@@ -175,18 +190,18 @@ def save_configuration(
 
     if clear_openai_key:
         updates["OPENAI_API_KEY"] = ""
-    elif str(openai_api_key or "").strip():
-        updates["OPENAI_API_KEY"] = str(openai_api_key).strip()
+    elif openai_input:
+        updates["OPENAI_API_KEY"] = openai_input
 
     if clear_gemini_key:
         updates["GEMINI_API_KEY"] = ""
-    elif str(gemini_api_key or "").strip():
-        updates["GEMINI_API_KEY"] = str(gemini_api_key).strip()
+    elif gemini_input:
+        updates["GEMINI_API_KEY"] = gemini_input
 
     if clear_notion_key:
         updates["NOTION_API_KEY"] = ""
-    elif str(notion_api_key or "").strip():
-        updates["NOTION_API_KEY"] = str(notion_api_key).strip()
+    elif notion_input:
+        updates["NOTION_API_KEY"] = notion_input
 
     parent_input = str(notion_parent_page or "").strip()
     if parent_input:

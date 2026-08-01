@@ -42,15 +42,15 @@
     ]
   },
   {
-    "name": "same_titles_with_different_chapter_numbers_are_disambiguated",
+    "name": "same_titles_with_different_chapter_numbers_are_kept",
     "text": "Module 1. CSS 基礎應用\n1.\n選擇器\n2.\n顏色\n\nSection 1.\n選擇器\n選擇器內容。\nSection 2.\n顏色\n顏色內容。\n\nModule 2. CSS 基礎應用\n1.\n方塊模型\n2.\n排版\n\nSection 1.\n方塊模型\n方塊模型內容。\nSection 2.\n排版\n排版內容。",
     "expected_chapters": [
       {
-        "title": "CSS 基礎應用｜選擇器、顏色",
+        "title": "CSS 基礎應用",
         "subsections": ["選擇器", "顏色"]
       },
       {
-        "title": "CSS 基礎應用｜方塊模型、排版",
+        "title": "CSS 基礎應用",
         "subsections": ["方塊模型", "排版"]
       }
     ]

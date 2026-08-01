@@ -1256,6 +1256,26 @@ def _create_parent_page(
     )
 
 
+def _is_notion_page_usable(
+    notion: Client,
+    page_id: str | None,
+) -> bool:
+    """確認既有 Notion 頁面仍可作為本次匯出的父頁。"""
+
+    if not page_id:
+        return False
+
+    try:
+        page = notion.pages.retrieve(page_id=str(page_id))
+    except Exception:
+        return False
+
+    return not bool(
+        page.get("archived")
+        or page.get("in_trash")
+    )
+
+
 def _build_quiz_blocks(
     quiz_items: list[ChapterQuizItem],
 ) -> list[dict]:
@@ -2532,6 +2552,17 @@ def create_document_learning_notebook(
 
     parent_page_id = export_state.get("parent_page_id")
     parent_page_url = export_state.get("parent_page_url")
+
+    if parent_page_id and not _is_notion_page_usable(
+        notion=notion,
+        page_id=str(parent_page_id),
+    ):
+        export_state = _safe_reset_export_state(
+            document_name=document_name,
+            chapter_count=chapter_count,
+        )
+        parent_page_id = ""
+        parent_page_url = ""
 
     if not parent_page_id:
         parent_page = _create_parent_page(

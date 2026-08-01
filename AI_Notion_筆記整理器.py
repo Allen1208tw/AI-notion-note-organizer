@@ -3230,6 +3230,8 @@ if "parsed_document" in st.session_state:
                     document_id=current_document_id,
                 )
                 st.session_state["active_notion_job_id"] = job["id"]
+                st.session_state.pop("document_notion_result", None)
+                st.session_state.pop("notion_page_url", None)
                 st.success("已加入 Notion 背景匯出佇列。")
                 st.rerun()
             except Exception as error:
@@ -3254,6 +3256,8 @@ if "parsed_document" in st.session_state:
                     document_id=current_document_id,
                 )
                 st.session_state["active_notion_job_id"] = job["id"]
+                st.session_state.pop("document_notion_result", None)
+                st.session_state.pop("notion_page_url", None)
                 st.success("已加入 Notion 背景匯出佇列。")
                 st.rerun()
             except Exception as error:

@@ -5,12 +5,14 @@ import json
 import os
 import re
 import subprocess
+import sys
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
 import requests
 
+from src.config.runtime_paths import RESOURCE_DIR, is_frozen_application
 from src.config.settings import APP_AUTO_DOWNLOAD_UPDATES, OUTPUT_DIR
 from src.version import __version__
 
@@ -215,9 +217,15 @@ def launch_update_installer(installer_path: str | Path) -> None:
     path = Path(installer_path).resolve()
     if not path.is_file() or path.suffix.lower() != ".exe":
         raise FileNotFoundError("找不到已驗證的更新安裝檔。")
+
+    if is_frozen_application():
+        install_dir = Path(sys.executable).resolve().parent
+    else:
+        install_dir = RESOURCE_DIR
     subprocess.Popen(
         [
             str(path),
+            f"/DIR={install_dir}",
             "/SILENT",
             "/CLOSEAPPLICATIONS",
             "/RESTARTAPPLICATIONS",
