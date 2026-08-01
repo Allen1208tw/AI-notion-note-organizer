@@ -58,6 +58,18 @@ def _stored_int(values: dict[str, str], key: str) -> int:
         return int(DEFAULTS[key])
 
 
+def validate_notion_token(value: str) -> str:
+    token = str(value or "").strip()
+    if not token:
+        raise ValueError("尚未設定 Notion Token。")
+    if not token.isascii() or not token.startswith(("ntn_", "secret_")):
+        raise ValueError(
+            "Notion Token 格式無效，請貼上以 ntn_ 或 secret_ 開頭的 "
+            "Internal Integration Token。"
+        )
+    return token
+
+
 def normalize_notion_page_id(value: str) -> str:
     text = str(value or "").strip()
     if not text:
@@ -83,8 +95,29 @@ def normalize_notion_page_id(value: str) -> str:
     raise ValueError("Notion 父頁格式不正確，請貼上頁面網址或 32 位 Page ID。")
 
 
+def validate_notion_parent_page_id(value: str) -> str:
+    try:
+        return normalize_notion_page_id(value)
+    except ValueError as error:
+        raise ValueError(
+            "Notion 父頁格式無效，請貼上完整頁面網址或 32 位 Page ID。"
+        ) from error
+
+
 def get_configuration_status() -> dict[str, Any]:
     values = _read_values()
+    try:
+        validate_notion_token(values.get("NOTION_API_KEY", ""))
+        notion_api_configured = True
+    except ValueError:
+        notion_api_configured = False
+
+    try:
+        validate_notion_parent_page_id(values.get("NOTION_PARENT_PAGE_ID", ""))
+        notion_parent_configured = True
+    except ValueError:
+        notion_parent_configured = False
+
     ai_provider = str(
         values.get("AI_PROVIDER", DEFAULTS["AI_PROVIDER"])
     ).strip().lower()
@@ -96,8 +129,8 @@ def get_configuration_status() -> dict[str, Any]:
         "ai_provider": ai_provider,
         "openai_configured": bool(values.get("OPENAI_API_KEY")),
         "gemini_configured": bool(values.get("GEMINI_API_KEY")),
-        "notion_api_configured": bool(values.get("NOTION_API_KEY")),
-        "notion_parent_configured": bool(values.get("NOTION_PARENT_PAGE_ID")),
+        "notion_api_configured": notion_api_configured,
+        "notion_parent_configured": notion_parent_configured,
         "notion_parent_page_id": values.get("NOTION_PARENT_PAGE_ID", ""),
         "openai_chunk_model": values.get(
             "OPENAI_CHUNK_MODEL",
@@ -201,11 +234,13 @@ def save_configuration(
     if clear_notion_key:
         updates["NOTION_API_KEY"] = ""
     elif notion_input:
-        updates["NOTION_API_KEY"] = notion_input
+        updates["NOTION_API_KEY"] = validate_notion_token(notion_input)
 
     parent_input = str(notion_parent_page or "").strip()
     if parent_input:
-        updates["NOTION_PARENT_PAGE_ID"] = normalize_notion_page_id(parent_input)
+        updates["NOTION_PARENT_PAGE_ID"] = validate_notion_parent_page_id(
+            parent_input
+        )
     elif "NOTION_PARENT_PAGE_ID" not in current:
         updates["NOTION_PARENT_PAGE_ID"] = ""
 

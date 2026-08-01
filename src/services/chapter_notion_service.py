@@ -32,6 +32,10 @@ from src.services.chapter_cache_service import (
     save_visual_context_cache,
 )
 from src.services.chapter_service import analyze_chapter
+from src.services.app_configuration_service import (
+    validate_notion_parent_page_id,
+    validate_notion_token,
+)
 from src.services.export_state_service import (
     get_pending_chapters,
     is_chapter_completed,
@@ -881,10 +885,21 @@ def _safe_mark_export_finished(
 def _get_notion_client() -> Client:
     """建立 Notion Client。"""
 
-    if not NOTION_API_KEY:
-        raise ValueError("尚未設定 NOTION_API_KEY。")
+    return Client(auth=validate_notion_token(NOTION_API_KEY))
 
-    return Client(auth=NOTION_API_KEY)
+
+def _raise_if_ai_quota_exhausted(error: Exception) -> None:
+    error_message = str(error)
+    lowered_message = error_message.lower()
+    if (
+        "resource_exhausted" in lowered_message
+        and "quota" in lowered_message
+    ):
+        raise RuntimeError(
+            "Gemini API 額度已用盡，已停止處理後續 Module。"
+            "請等待額度重置或切換 AI 供應商後再續跑。"
+            f" 原始錯誤：{error_message}"
+        ) from error
 
 
 def _chunk_text(
@@ -1244,15 +1259,14 @@ def _create_parent_page(
 ) -> dict:
     """建立整份文件的 Notion 父頁。"""
 
-    if not NOTION_PARENT_PAGE_ID:
-        raise ValueError("尚未設定 NOTION_PARENT_PAGE_ID。")
+    parent_page_id = validate_notion_parent_page_id(NOTION_PARENT_PAGE_ID)
 
     title = f"📘 {document_name}｜AI 詳細學習筆記"
 
     return _create_page(
         notion=notion,
         title=title,
-        parent_page_id=NOTION_PARENT_PAGE_ID,
+        parent_page_id=parent_page_id,
     )
 
 
@@ -2901,6 +2915,8 @@ def create_document_learning_notebook(
                     "error": error_message,
                 }
             )
+
+            _raise_if_ai_quota_exhausted(error)
 
     final_state = _safe_load_export_state(
         document_name=document_name,
